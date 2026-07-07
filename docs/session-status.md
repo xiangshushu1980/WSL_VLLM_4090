@@ -1,4 +1,4 @@
-# Session Status — 2026-07-06
+# Session Status — 2026-07-07
 
 > 开启新对话后，将此文档提供给 Claude 即可无缝继续。
 
@@ -6,79 +6,51 @@
 
 ## 一、我们的目标
 
-在 **RTX 4090 24GB** 上部署 **Qwen3.6-27B-AWQ**，实现 **4 并发** vLLM 推理服务。
+在 **RTX 4090 24GB** 上多配置部署 vLLM 推理服务，支持 **2 个模型、7 种配置** 灵活切换。
 
 ---
 
-## 二、当前状态
+## 二、当前状态：所有目标已完成 ✅
 
-### ✅ 4 并发测试结果 (2026-07-07 优化后)
+### 2.1 模型资产
 
-| 指标 | 优化前 (awq+eager) | 优化后 (awq_marlin+CUDA) | 提升 |
-|------|-------------------|------------------------|------|
-| 单请求 TPS | 6.2 tok/s | 48.0 tok/s | 7.7x |
-| 4并发总吞吐 | 24.2 tok/s | 167.6 tok/s | 6.9x |
-| TTFT | 0.46–0.73s | 0.23–0.41s | ~50% 改善 |
+| 模型 | 位置 | 大小 | 量化 | 状态 |
+|------|------|------|------|------|
+| Qwen3.6-27B-AWQ | `models/Qwen/Qwen3.6-27B-AWQ/` | 21 GB | AWQ 4-bit, Dense | ✅ 生产就绪 |
+| Qwen3.6-35B-A3B-AWQ | `models/Qwen3.6-35B-A3B-AWQ/` | 26 GB | AWQ 4-bit, MoE | ✅ 生产就绪 🏆 |
+| Qwen2.5-1.5B-Instruct | `models/Qwen2.5-1.5B-Instruct/` | 2.9 GB | 无 (FP16) | ✅ 教程用 |
 
-### ✅ 已完成
+### 2.2 启动配置一览
 
-| 任务 | 状态 |
+| 脚本 | 模型 | 上下文 | 并发 | 吞吐 | 满ctx并发 | 场景 |
+|------|------|--------|------|------|----------|------|
+| `start_35b_moe.sh` | 35B-A3B | 32K | 2 | **356 tok/s** | 3.21x 🟢 | 🏆 长文·高吞吐 |
+| `start_27b_production.sh` | 27B | 4K | 4 | **168 tok/s** | 8.33x 🟢 | 高并发在线服务 |
+| `start_27b_long.sh` | 27B | 32K | 2 | 87 tok/s | 2.08x 🟡 | 长文档·RAG |
+| `start_27b_balanced.sh` | 27B | 8K | 2 | 84 tok/s | 5.56x 🟢 | 日常中等任务 |
+| `start_27b_maxctx.sh` | 27B | **73K** | 1 | 48 tok/s | 1.00x 🔴 | 极限单请求 |
+| `start_15b_tutorial.sh` | 1.5B | 默认 | 默认 | — | — | 学习·快速测试 |
+
+> **满ctx并发** = KV 池能装下多少个满上下文请求。🟢 宽裕 🟡 勉强 🔴 极限。
+
+### 2.3 基础设施
+
+| 文件 | 用途 |
 |------|------|
-| vLLM 0.23.0 安装 | ✅ conda env `vllm` 可用 |
-| Qwen3.6-27B-AWQ 下载 | ✅ `models/Qwen/Qwen3.6-27B-AWQ/` (21GB) |
-| flashinfer CUDA 13 兼容补丁 | ✅ 3处修复 + 1个symlink（详见下方备忘） |
-| 生产启动脚本 | ✅ `start_server.sh` |
-| 测试脚本 | ✅ `test_concurrent.py` |
-| 文档体系 | ✅ `docs/` + `scripts/` |
-| 记忆文件 | ✅ `~/.claude/.../memory/` |
-| 27B-AWQ 4 并发推理 | ✅ 4/4 成功，167.6 tok/s（优化后） |
-| Qwen2.5-1.5B 教程模型 | ✅ 已下载 (~2.9GB) |
-| 教程第1-4步 | ✅ 全部完成，并发扩展 3.8x |
+| `scripts/env.sh` | 所有脚本共享的环境变量 (Conda/CUDA/WSL2/flashinfer) |
+| `scripts/stop_vllm.sh` | 三步清理: SIGTERM → SIGKILL → GPU 残留清除 |
+| `scripts/step1-basic.sh` ~ `step4-benchmark.py` | 4 步渐进教程 |
+| `benchmark_optimizations.py` | 优化矩阵测试 (单请求/并发/PrefixCaching) |
+| `benchmark_tps.py` | 1.5B vs 27B 并发扩展对比 |
+| `test_concurrent.py` | 4 并发压力测试 (Qwen3.6 reasoning) |
 
-### ⏸️ 待完成
+### 2.4 版本控制
 
-> 全部完成 ✅
-
-### 🧪 优化实验记录 (2026-07-07)
-
-| 优化手段 | 结果 | 详情 |
-|----------|------|------|
-| awq→awq_marlin | ✅ 7.7x | `docs/build-log.md#5` |
-| CUDA graphs | ✅ 含上面 | 额外 0.48 GiB |
-| Prefix Caching | ❌ OOM | 即使降到 2048/2seqs 也不够 |
-| N-gram GPU 推测 | ❌ 不兼容 | Qwen3.6 请求挂起 |
-| MTP 推测 | ❌ OOM | 未量化头 ~850 MiB |
-| 降上下文 | ⚠️ 杀死扩展 | 2048: 1.1x vs 4096: 3.8x |
-| **上下文极限测试** | ✅ 新完成 | 4K-72K 全范围测试 |
-
-**单请求 TPS 天花板**: ~52 tok/s (memory-bandwidth bound)，当前 48 tok/s 已达 92%
-
-### 📏 上下文伸缩测试 (2026-07-07 新增)
-
-| 上下文 | 最大并发 | 单TPS | 并发吞吐 | 备注 |
-|--------|----------|-------|----------|------|
-| 4,096 | 4 | 47.9 | 167.6 (4并发) | **生产最优** |
-| 8,192 | 2 | 47.7 | 83.7 (2并发) | 上下文翻倍，并发减半 |
-| 32,768 | **2** | 47.8 | 87.0 (2并发) | **长上下文+有限并发** |
-| 65,536 | 1 | 47.6 | — | 64K 长上下文单请求 |
-| **73,728** | **1** | 47.7 | — | **绝对极限** (1.00x) |
-
-**核心发现**：
-- 单 TPS 不受上下文影响（始终 ~48 tok/s），memory-bandwidth bound
-- CUDA graph 随并发数缩小：4 seqs→0.48 GiB, 1 seq→0.40 GiB
-- KV cache 池随之增长：2.40→2.48 GiB（省下的 CUDA graph 内存分给 KV cache）
-- **0.935 是 gpu_memory_utilization 物理天花板**：PyTorch CUDA 上下文吃掉 1.12 GiB，vLLM 看到 free 22.45 GiB。关 GameViewer、`expandable_segments`、重启系统均无效
-- 首次编译新上下文需 ~2 GiB 临时显存→首次失败，第二次（缓存命中）成功
-- 详见 `docs/build-log.md#83`，`docs/context_scaling_results.md`
-
-### ❌ 已解决的坑（备忘）
-
-| 问题 | 根因 | 修复文件 | 行号 |
-|------|------|----------|------|
-| flashinfer CCCL 兼容(CUDA 13) | `sm89_nvcc_flags` 没继承 `common_nvcc_flags` | `flashinfer/jit/core.py:123` | 改 `[...]` → `[...] + common_nvcc_flags` |
-| flashinfer CCCL 兼容(attention) | `CompilationContext.COMMON_NVCC_FLAGS` 缺少 CCCL disable | `flashinfer/compilation_context.py:28` | 加 `-DCCCL_DISABLE_CTK_COMPATIBILITY_CHECK` |
-| flashinfer JIT 链接失败 | nvidia-cu13 wheel 用 `lib/` 非 `lib64/` | `flashinfer/jit/cpp_ext.py:254` | `lib64` → `lib`, 删 `stubs`, 加 `/usr/lib/wsl/lib` |
-| libcudart.so 找不到 | 只有 `libcudart.so.13` 无 symlink | symlink | `ln -sf libcudart.so.13 libcudart.so` (在 cu13/lib/) |
+| 项目 | 状态 |
+|------|------|
+| Git 仓库 | ✅ `git@github.com:xiangshushu1980/WSL_VLLM_4090.git` |
+| `.gitignore` | ✅ 排除 `models/` (49GB)、`.claude/`、`__pycache__/` 等 |
+| 模型文件 | ❌ 不上传 (`.gitignore` 中) |
 
 ---
 
@@ -86,188 +58,171 @@
 
 ```
 GPU:    NVIDIA GeForce RTX 4090, 24 GB VRAM
-OS:     WSL2 (Linux 6.6)
+OS:     WSL2 (Linux 6.6.114)
 Conda:  /home/sean/miniconda3/envs/vllm/
 Python: 3.11
 vLLM:   0.23.0
-CUDA:   13.3 (cu13, at $CONDA_PREFIX/lib/python3.11/site-packages/nvidia/cu13)
+CUDA:   13.3 (cu13 pip package)
+驱动:   610.43.02 (WSL2)
 ```
 
 ## 四、关键技术细节
 
-### 4.1 Qwen3.6-27B 架构（重要！）
-- **Dense**（非 MoE）：全部 27B 参数每 token 激活
-- **混合架构**：64 层，3×DeltaNet(linea_attn) + 1×Full Attention 循环
-- 仅 16/64 层有传统 KV cache → KV 显存节约 75%
-- `hidden_size=5120, head_dim=256, num_kv_heads=4`
+### 4.1 两个模型的架构差异
 
-### 4.2 我们下载的模型
-- **源**: QuantTrio/Qwen3.6-27B-AWQ (ModelScope)
-- **位置**: `models/Qwen/Qwen3.6-27B-AWQ/`
-- **大小**: 21 GB (8 个 safetensors 分片)
-- **量化**: AWQ 4-bit
-- **加载后显存**: **19.05 GiB**（实测）
+| 特性 | Qwen3.6-27B | Qwen3.6-35B-A3B |
+|------|------------|-----------------|
+| 架构 | Dense (27B全激活) | MoE (35B总参, 3B激活) |
+| 全注意力层 | 16/64 | 10/40 |
+| KV per token (fp8) | ~74 KB | **~12 KB** |
+| 模型加载显存 | 19.05 GiB | 20.27 GiB |
+| CUDA graph | 0.40-0.48 GiB | 0.46 GiB |
+| KV cache 池 | 2.40-2.48 GiB | 1.22 GiB |
+| 单请求 TPS | ~48 tok/s | **~133 tok/s** |
+| CUDA graph 关闭 | 性能暴跌 | **12x 暴跌 (133→10 tok/s)** |
 
-### 4.3 flashinfer + CUDA 13 兼容问题
-- **问题**: flashinfer 0.6.12/0.6.13 的 CCCL 头文件与 CUDA 13 的 nvcc 不兼容
-- **出错信息**: `error: "CUDA compiler and CUDA toolkit headers are incompatible"`
-- **已应用的修复**:
-  1. `pip install flashinfer-cubin==0.6.13 flashinfer-python==0.6.13`
-  2. Patch `flashinfer/jit/core.py` — `common_nvcc_flags` 加了 `-DCCCL_DISABLE_CTK_COMPATIBILITY_CHECK`
-  3. `export VLLM_USE_FLASHINFER_SAMPLER=0`
-  4. 清除 `~/.cache/flashinfer/`
-- **验证状态**: ✅ 修复完成并验证通过 — 4 并发推理成功，163 tok/s 吞吐
+### 4.2 显存分配模型
 
-### 4.4 WSL2 网络注意事项
-- `localhost`/`127.0.0.1` 不通 WSL2 端口
-- 必须用 WSL IP: 运行 `hostname -I` 获取（当前是 `192.168.31.46`）
-- API 地址: `http://192.168.31.46:8000/v1`
+```
+GPU 总显存:                   23.99 GiB
+vLLM 池 (0.935):              22.43 GiB
+├── PyTorch 开销:             ~1.12 GiB (固定, 不可压缩)
+├── 模型权重:                  19-20 GiB (取决于模型)
+├── CUDA graph:              0.40-0.48 GiB (取决于 max_num_seqs)
+└── KV cache (fp8):          剩余全部
+                               27B: 2.40-2.48 GiB
+                               35B: 1.22 GiB (MoE per-token 小)
+```
+
+**0.935 是物理天花板**: PyTorch CUDA 上下文固定吃掉 1.12 GiB, vLLM 看到 free 22.45 GiB, 0.935×23.99=22.43 GiB。多 0.02 GiB 都拿不出。
+
+### 4.3 KV Cache 池理解
+
+KV cache 是一个**共享池**, 不是按序列独立分配:
+
+```
+max_seqs=2, KV池 2.44 GiB → 总容量 ~68K tokens → 可分给 2 个请求
+max_seqs=1, KV池 2.48 GiB → 总容量 ~73K tokens → 全给 1 个请求
+
+降并发只让池子大 0.04 GiB (+1.6%), 总容量只多 8%
+```
+
+去掉一个并发槽位不会"释放 32K 容量" — 池子大小几乎不变, 只是重新分配给更少的请求。
+
+### 4.4 flashinfer + CUDA 13 兼容修复
+
+已应用 4 处修复（详见 `build-log.md §3`）:
+1. `flashinfer/jit/core.py:123` — sm89 flags 继承 common flags
+2. `flashinfer/compilation_context.py:28` — 加 CCCL disable flag  
+3. `flashinfer/jit/cpp_ext.py:254` — lib64→lib, 加 WSL lib
+4. nvidia-cu13/lib/ 下创建 .so symlink
+
+环境变量: `VLLM_USE_FLASHINFER_SAMPLER=0`, `VLLM_WORKER_MULTIPROC_METHOD=spawn`
+
+### 4.5 首次编译陷阱 (两个模型都有)
+
+切换 `max_model_len` 或首次启动时，torch.compile 需 ~2 GiB 临时显存 → 首次可能 OOM。**第二次启动（缓存命中）即正常。**
+
+35B-A3B 尤其明显：首启 KV cache 仅 0.53 GiB, 重启后恢复到 1.22 GiB。
+
+### 4.6 WSL2 网络
+
+- `localhost`/`127.0.0.1` 不通 → 用 `hostname -I` 获取 IP
+- API 地址: `http://<WSL_IP>:8000/v1`
 
 ---
 
-## 五、当前 start_server.sh 内容
+## 五、已完成的所有任务
 
-```bash
-#!/bin/bash
-source /home/sean/miniconda3/etc/profile.d/conda.sh
-conda activate vllm
+| 任务 | 状态 | 日期 |
+|------|------|------|
+| vLLM 0.23.0 安装 (conda) | ✅ | 07-06 |
+| flashinfer CUDA 13 兼容修复 | ✅ | 07-06 |
+| Qwen3.6-27B-AWQ 下载部署 | ✅ | 07-06 |
+| 27B 4并发 167.6 tok/s (awq_marlin+CUDA graph) | ✅ | 07-07 |
+| Qwen2.5-1.5B 教程模型下载 | ✅ | 07-06 |
+| 4 步渐进教程完成 | ✅ | 07-07 |
+| 上下文伸缩测试 (4K-73K) | ✅ | 07-07 |
+| gpu_memory_utilization 天花板调查 | ✅ | 07-07 |
+| Qwen3.6-35B-A3B-AWQ 下载部署 | ✅ | 07-07 |
+| 35B MoE 32K/2并发 355.8 tok/s | ✅ | 07-07 |
+| 多配置启动脚本体系 (6 个配置) | ✅ | 07-07 |
+| stop_vllm.sh 三步清理脚本 | ✅ | 07-07 |
+| Git 仓库初始化 + GitHub 推送 | ✅ | 07-07 |
 
-export LD_LIBRARY_PATH=/usr/lib/wsl/lib:$LD_LIBRARY_PATH
-export CUDA_VISIBLE_DEVICES=0
-export CUDA_HOME=/home/sean/miniconda3/envs/vllm/lib/python3.11/site-packages/nvidia/cu13
-export PATH=/home/sean/miniconda3/envs/vllm/bin:$CUDA_HOME/bin:$PATH
-export VLLM_WORKER_MULTIPROC_METHOD=spawn
-export VLLM_USE_FLASHINFER_SAMPLER=0
+### 已尝试但失败的优化
 
-ln -sf /home/sean/miniconda3/envs/vllm/bin/x86_64-conda-linux-gnu-gcc /home/sean/miniconda3/envs/vllm/bin/gcc 2>/dev/null
-ln -sf /home/sean/miniconda3/envs/vllm/bin/x86_64-conda-linux-gnu-g++ /home/sean/miniconda3/envs/vllm/bin/g++ 2>/dev/null
-export CC=x86_64-conda-linux-gnu-gcc
-export CXX=x86_64-conda-linux-gnu-g++
+| 优化 | 结果 | 原因 |
+|------|------|------|
+| MTP 推测解码 | ❌ OOM | 未量化头 ~850 MiB, 与 CUDA graph 不共存 |
+| Prefix Caching | ❌ OOM | 哈希表 ~2 GiB, 降到 2048/2seqs 都不够 |
+| N-gram GPU 推测 | ❌ 不兼容 | Qwen3.6 请求挂起 |
+| CPU offload | ❌ 崩溃 | 与 torch.compile + Marlin MoE 均不兼容 |
+| `enforce_eager` (35B) | ❌ 不可用 | 速度仅 ~7 tok/s (CUDA graph 加速 13x) |
+| gpu_memory_utilization=0.94 | ❌ 永远失败 | 需要 22.55 GiB, 只有 22.45 GiB |
 
-MODEL_PATH="/home/sean/projects/vllm/models/Qwen/Qwen3.6-27B-AWQ"
-
-exec python -m vllm.entrypoints.openai.api_server \
-    --model "$MODEL_PATH" \
-    --served-model-name qwen3.6-27b \
-    --host 0.0.0.0 \
-    --port 8000 \
-    --quantization awq_marlin \
-    --tensor-parallel-size 1 \
-    --gpu-memory-utilization 0.935 \
-    --max-model-len 4096 \
-    --max-num-seqs 4 \
-    --kv-cache-dtype fp8 \
-    --trust-remote-code \
-    --language-model-only \
-    --reasoning-parser qwen3
-```
+---
 
 ## 六、项目文件结构
 
 ```
 /home/sean/projects/vllm/
-├── docs/
-│   ├── params-reference.md    # 常用参数速查（分类、显存预算公式）
-│   ├── rtx4090-guide.md       # 社区实战（模型推荐、量化对比、性能）
-│   └── vllm-tutorial.md       # 5步教程（安装→参数→流式→并发→生产）
-├── scripts/
-│   ├── step1-basic.sh         # 最简启动 Qwen2.5-1.5B
-│   ├── step2-memory.sh        # 显存参数学习
-│   ├── step3-streaming.py     # 流式输出 + TTFT/TPS
-│   └── step4-benchmark.py     # 1/2/4/8 并发自动对比
-├── models/
-│   ├── Qwen/
-│   │   └── Qwen3.6-27B-AWQ/       # 21GB Dense 模型
-│   └── Qwen3.6-35B-A3B-AWQ/        # 26GB MoE 模型 (推荐长上下文)
-├── start_server.sh                  # 27B 生产启动脚本
-└── test_concurrent.py         # 4并发压力测试
+├── scripts/                          # 启动 & 管理脚本
+│   ├── env.sh                        #   共享环境配置
+│   ├── start_27b_production.sh       #   27B: 4K×4并发 168 tok/s
+│   ├── start_27b_balanced.sh         #   27B: 8K×2并发 84 tok/s
+│   ├── start_27b_long.sh             #   27B: 32K×2并发 87 tok/s
+│   ├── start_27b_maxctx.sh           #   27B: 73K×1并发 48 tok/s (极限)
+│   ├── start_35b_moe.sh              #   35B: 32K×2并发 356 tok/s 🏆
+│   ├── start_15b_tutorial.sh         #   1.5B: 教程/测试
+│   ├── stop_vllm.sh                  #   三步清理脚本
+│   ├── step1-basic.sh                #   教程1: 最简启动
+│   ├── step2-memory.sh               #   教程2: 显存参数
+│   ├── step3-streaming.py            #   教程3: 流式 TTFT/TPS
+│   └── step4-benchmark.py            #   教程4: 并发扩展
+├── docs/                             # 文档
+│   ├── build-log.md                  #   完整构建日志 (永久记录)
+│   ├── session-status.md             #   本文档 (会话恢复)
+│   ├── params-reference.md           #   参数速查 + 显存预算公式
+│   ├── context_scaling_results.md    #   上下文伸缩测试完整数据
+│   ├── optimization_results.md       #   5 配置优化测试对比
+│   ├── rtx4090-guide.md              #   社区实践 + 模型推荐
+│   └── vllm-tutorial.md              #   5 步渐进教程
+├── benchmark_optimizations.py        # 优化矩阵测试
+├── benchmark_tps.py                  # TPS 基准测试
+├── test_concurrent.py                # 并发压力测试
+├── start_server.sh                   # (旧) 27B 单配置脚本
+└── .gitignore                        # 排除 models/ .claude/ 等
 ```
 
-## 七、新对话后的操作步骤
+---
 
+## 七、新对话快速恢复
+
+```bash
+# 第1步: 验证环境
+nvidia-smi                           # GPU 空闲?
+
+# 第2步: 选配置启动 (推荐 35B MoE)
+bash scripts/start_35b_moe.sh        # 最佳综合
+# 或: bash scripts/start_27b_production.sh   # 高并发
+
+# 第3步: 测试
+curl http://$(hostname -I | awk '{print $1}'):8000/v1/models
+
+# 第4步: 停止
+bash scripts/stop_vllm.sh
+
+# 第5步: 同步文档更新
+git add -A && git commit -m "..." && git push origin master
 ```
-第1步: 验证环境
-  $ nvidia-smi                    # 确认 GPU 空闲
-  $ source start_server.sh        # 启动服务
 
-第2步: 检查服务
-  $ hostname -I                   # 获取 WSL IP
-  $ curl http://<IP>:8000/v1/models   # 验证服务在线
-
-第3步: 跑并发测试
-  $ python test_concurrent.py     # 4并发压力测试
-  # 如果失败，检查日志中的 flashinfer 错误
-
-第4步（可选）: 走教程
-  下载 Qwen2.5-1.5B:
-  $ hf download Qwen/Qwen2.5-1.5B-Instruct --local-dir models/Qwen2.5-1.5B-Instruct
-  然后按 docs/vllm-tutorial.md 逐步实验
-```
+---
 
 ## 八、文档维护约定
 
-> **重要**：新开对话后，除了沿用本文档恢复上下文，还需要：
-> 1. 将新发现的问题、解决方案、性能数据更新到 [build-log.md](build-log.md)
-> 2. 每次优化的前后对比数据记录下来
-> 3. 社区反馈和外部参考资料索引到此文档
->
-> build-log.md 是永久记录，session-status.md 是短期上下文恢复。
-
-## 九、如果 flashinfer 仍然失败
-
-备选方案:
-```bash
-# 完全绕过 flashinfer，用 Triton 后端
-export VLLM_ATTENTION_BACKEND=TRITON_ATTN
-export VLLM_USE_FLASHINFER_SAMPLER=0
-
-# 或重新安装 flashinfer 更新版本
-pip install --upgrade flashinfer-cubin flashinfer-python
-rm -rf ~/.cache/flashinfer/
-```
-
-## 十、Qwen3.6-35B-A3B MoE 模型 (2026-07-07)
-
-### 🎯 核心数据
-
-| 指标 | 27B (生产) | 27B (长上下文) | **35B-A3B (推荐)** |
-|------|-----------|-------------|------------------|
-| 上下文 | 4,096 | 32,768 | **32,768** |
-| 最大并发 | 4 | 2 | **2** (最多 3) |
-| 总吞吐 | 167.6 tok/s | 87.0 tok/s | **355.8 tok/s** |
-| vs 27B@4K | — | — | **2.1x** |
-| vs 27B@32K | — | — | **4.1x** |
-
-### 架构要点
-
-- MoE: 256 experts top-8, 35B total / 3B activated
-- 10 Full Attention + 30 DeltaNet 层 → per-token KV 仅 ~12 KB (fp8)
-- 模型加载: 20.27 GiB GPU (AWQ 4-bit)
-- CUDA graph: 0.46 GiB (FULL_AND_PIECEWISE)
-- KV cache: 1.22 GiB (105,202 tokens)
-
-### 35B 启动脚本
-
-```bash
-python -m vllm.entrypoints.openai.api_server \
-    --model /home/sean/projects/vllm/models/Qwen3.6-35B-A3B-AWQ \
-    --served-model-name qwen3.6-35b-a3b \
-    --host 0.0.0.0 --port 8000 \
-    --quantization awq_marlin \
-    --tensor-parallel-size 1 \
-    --gpu-memory-utilization 0.935 \
-    --max-model-len 32768 \
-    --max-num-seqs 2 \
-    --kv-cache-dtype fp8 \
-    --trust-remote-code \
-    --language-model-only \
-    --reasoning-parser qwen3
-```
-
-### ⚠️ 重要注意
-
-1. **首次启动必需重启**: torch.compile 编译需 ~46s 且占用临时显存 → KV cache 仅 0.53 GiB。重启后缓存命中（4.4s），KV cache 涨到 1.22 GiB
-2. **CUDA graph 决不能关**: 关了速度从 133 tok/s 跌到 10 tok/s（12x 差异！）
-3. **`--cpu-offload-gb` 不可用**: UVA offloader 与 torch.compile 和 Marlin MoE kernel 均不兼容
-4. **`--reasoning-parser qwen3` 必须加**: Qwen3.6 默认生成 thinking token，不加的话输出全是推理过程
-5. **`max_tokens` 设大些**: thinking token 也计入预算，推荐 ≥1024
+- **build-log.md** — 永久技术记录 (问题/修复/性能数据), 大节追加
+- **session-status.md** — 本文档, 会话级状态和快速参考, 每次对话结束更新
+- **params-reference.md** — 参数和配置的权威来源
+- **context_scaling_results.md** — 测试原始数据
+- **optimization_results.md** — 优化对比数据

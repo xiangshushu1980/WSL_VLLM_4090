@@ -17,6 +17,8 @@
 9. [Prefill 阻塞与 Chunked Prefill](#9-prefill-阻塞与-chunked-prefill)
 10. [社区基准对比](#10-社区基准对比)
 11. [Qwen3.6-35B-A3B MoE 部署](#11-qwen36-35b-a3b-moe-部署)
+12. [多配置脚本体系](#12-多配置脚本体系)
+13. [项目总结](#13-项目总结)
 
 ---
 
@@ -514,26 +516,94 @@ Qwen3.6 系列默认生成 "thinking" token（内部推理过程），然后用 
 - **`max_tokens` 预算**：thinking token 也计入 `max_tokens`。建议设置充裕的 `max_tokens`（≥1024），确保 thinking 完成后有足够 token 生成实际回答
 - **速度测量**：`completion_tokens` 统计所有 token（thinking + 回答），TPS 计算不受 reasoning parser 影响
 
-## 附录: 关键文件位置
+## 12. 多配置脚本体系
+
+> 日期: 2026-07-07
+
+### 12.1 设计动机
+
+27B 和 35B 两个模型各自支持多种上下文/并发组合。每次手动改参数容易出错，切换配置时容易忘关旧实例。需要一个统一的脚本体系 — 一个配置一个脚本，启动即用。
+
+### 12.2 架构
 
 ```
-/home/sean/projects/vllm/
-├── start_server.sh              # 27B 生产启动脚本
-├── test_concurrent.py           # 4 并发压力测试
-├── benchmark_tps.py             # TPS 基准测试
-├── scripts/
-│   ├── step1-basic.sh
-│   ├── step2-memory.sh
-│   ├── step3-streaming.py
-│   └── step4-benchmark.py
-├── docs/
-│   ├── build-log.md             # 本文档
-│   ├── session-status.md        # 会话状态
-│   ├── vllm-tutorial.md         # 5 步教程
-│   ├── params-reference.md      # 参数速查
-│   └── rtx4090-guide.md         # 社区实战
-└── models/
-    ├── Qwen/Qwen3.6-27B-AWQ/        # 21GB 生产模型 (Dense)
-    ├── Qwen3.6-35B-A3B-AWQ/         # 26GB MoE 模型 (35B/3B act)
-    └── Qwen2.5-1.5B-Instruct/       # 2.9GB 教程模型
+scripts/
+├── env.sh                    ← 共享环境 (Conda/CUDA/WSL2/flashinfer/颜色输出)
+├── start_27b_production.sh   ← 各自独立配置
+├── start_27b_balanced.sh
+├── start_27b_long.sh
+├── start_27b_maxctx.sh
+├── start_35b_moe.sh
+├── start_15b_tutorial.sh
+└── stop_vllm.sh              ← 统一清理
 ```
+
+**设计原则:**
+- **`env.sh` 是唯一的环境配置来源**：Conda 激活、CUDA 路径、WSL2 变量、flashinfer 兼容标志、`$COMMON_ARGS` 公共参数
+- **每个启动脚本极简**：只定义模型路径、上下文、并发数，其余继承 `$COMMON_ARGS`
+- **启动前自动检测冲突**：`check_running()` 发现已有 vLLM 进程时提示是否先停止
+- **`stop_vllm.sh` 三步保证清理**：SIGTERM (优雅) → SIGKILL (强制) → nvidia-smi 残留清除
+
+### 12.3 配置矩阵
+
+| 脚本 | 模型 | 上下文 | 并发 | 总吞吐 | 满ctx并发 | 适用场景 |
+|------|------|--------|------|--------|----------|----------|
+| `start_35b_moe.sh` | 35B-A3B | 32,768 | 2 | 355.8 | 3.21x 🟢 | 长文+高吞吐 🏆 |
+| `start_27b_production.sh` | 27B | 4,096 | 4 | 167.6 | 8.33x 🟢 | 高并发服务 |
+| `start_27b_long.sh` | 27B | 32,768 | 2 | 87.0 | 2.08x 🟡 | 长文档RAG |
+| `start_27b_balanced.sh` | 27B | 8,192 | 2 | 83.7 | 5.56x 🟢 | 日常使用 |
+| `start_27b_maxctx.sh` | 27B | 73,728 | 1 | 47.7 | 1.00x 🔴 | 极限上下文 |
+| `start_15b_tutorial.sh` | 1.5B | 默认 | 默认 | — | — | 学习测试 |
+
+**满ctx并发** = KV 池 token 容量 ÷ 单请求上下文 token。🟢 >3x 宽裕, 🟡 1.5-3x 勉强, 🔴 <1.5x 极限。
+
+### 12.4 经验总结
+
+1. **共享 env.sh 是正确抽象**：不重复写环境变量，修改一处生效全局
+2. **check_running + stop_vllm.sh 组合避免了大量手动操作**：以前每次换配置要手动 `kill`、检查 GPU 残留
+3. **文件头注释写清 ctx×seqs×throughput 比任何文档都有效**：`bash scripts/` + Tab 就能看到所有选项
+4. **stop_vllm.sh 的 `nvidia-smi --query-compute-apps` 清理是关键**：SIGKILL 后 GPU 上可能有残留 compute context，不清理会导致下次启动 OOM
+
+---
+
+## 13. 项目总结
+
+### 13.1 最终成果
+
+在 RTX 4090 24GB 单卡上成功部署 vLLM 0.23.0，支持 2 个模型、6 种生产配置：
+
+**Qwen3.6-35B-A3B (MoE)** — 最佳模型:
+- 32K 上下文 × 2 并发 → **355.8 tok/s** 总吞吐
+- 单请求 133 tok/s (vs 27B 的 48 tok/s = 2.8x)
+- CUDA graph 绝对不能关 (关了 12x 暴跌)
+
+**Qwen3.6-27B (Dense)** — 全场景覆盖:
+- 4K×4 并发 (高并发) → 73K×1 并发 (极限上下文)
+- 总吞吐范围 48-168 tok/s
+
+### 13.2 关键数字
+
+| 指标 | 值 |
+|------|-----|
+| 初始单请求速度 | 6.2 tok/s |
+| 最终单请求速度 (27B) | 48.0 tok/s (**7.7x**) |
+| 最终单请求速度 (35B) | 133.0 tok/s (**21x**) |
+| 最大总吞吐 (35B) | 355.8 tok/s |
+| 最大并发 (27B) | 4 @ 4K |
+| 最大上下文 (27B) | 73,728 tokens |
+| 优化手段 | awq→awq_marlin + CUDA graphs |
+| 遇到并解决的兼容问题 | 4 个 (flashinfer CUDA 13) |
+| 失败的优化尝试 | 5 个 (MTP/PrefixCache/N-gram/CPU offload/enforce_eager) |
+| 项目总代码量 | ~2,800 行 (脚本+文档+测试) |
+
+### 13.3 最重要的 3 个教训
+
+1. **CUDA graphs 对 MoE 是决定性的**：关了从 133→10 tok/s (12x)，远超 Dense 模型的影响。MoE 有大量小 kernel launch，graph 捕获将它们合并。
+2. **0.935 是物理天花板，无法突破**：PyTorch CUDA 上下文固定开销 1.12 GiB，关任何东西都省不出来。唯一出路是换框架。
+3. **KV cache 是共享池，不是按序列分配**：降并发不会"释放"容量给剩余请求。池子几乎不变，只是重新分配。
+
+### 13.4 项目 Git
+
+- 远程: `git@github.com:xiangshushu1980/WSL_VLLM_4090.git`
+- `.gitignore` 排除 `models/` (49GB)、`.claude/`
+- 3 次提交: 初始文档 → 脚本体系 → 脚本优化

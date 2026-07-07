@@ -107,10 +107,24 @@ CUDA Graph (FULL_AND_PIECEWISE):
 |------|--------|------|------|------|
 | 生产 | 4,096 | 4 | 167.6 tok/s | 高并发短上下文 |
 | 平衡 | 8,192 | 2 | 83.7 tok/s | 中等上下文 |
-| 长上下文 | 32,768 | 2 | 87.0 tok/s | 长文档单请求 |
-```
+| 长上下文 | 32,768 | 2 | 87.0 tok/s | 长文档+有限并发 |
+| 极限 | 73,728 | 1 | 47.7 tok/s | 物理极限, 单请求 |
 
-## 五、常见问题速查
+> 以上所有配置均有对应启动脚本: `bash scripts/start_27b_*.sh` / `bash scripts/start_35b_moe.sh`
+
+## 五、启动脚本速查
+
+| 你想做什么 | 运行这个 |
+|-----------|---------|
+| 最快最好 (推荐日常) | `bash scripts/start_35b_moe.sh` |
+| 高并发在线服务 | `bash scripts/start_27b_production.sh` |
+| 长文档问答/RAG | `bash scripts/start_27b_long.sh` |
+| 日常中等任务 | `bash scripts/start_27b_balanced.sh` |
+| 极限单请求 (~73K) | `bash scripts/start_27b_maxctx.sh` |
+| 学习测试 | `bash scripts/start_15b_tutorial.sh` |
+| 停止服务 | `bash scripts/stop_vllm.sh` |
+
+## 六、常见问题速查
 
 | 问题 | 原因 | 解决 |
 |------|------|------|

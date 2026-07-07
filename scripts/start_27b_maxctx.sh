@@ -1,17 +1,10 @@
 #!/bin/bash
 # ============================================================
-# Qwen3.6-27B-AWQ — 极限上下文配置
+# Qwen3.6-27B-AWQ · 极限上下文 (73Kctx × 1seq = 48 tok/s)
 # ============================================================
-# 场景: 超长文档 / 全书处理 / 极限单请求
-# 上下文: 73,728 tokens（物理极限）
-# 并发:   1 seq
-# 吞吐:   ~48 tok/s
-# 显存:   模型 19.0G + CUDA Graph 0.40G + KV cache 2.48G
+# KV池 2.48 GiB, 满ctx并发 1.00x — 一个token都不浪费的物理极限
+# 首次启动会因 torch.compile 临时显存不足而失败，重启即可
 # ============================================================
-# 注意: 首次启动会因 torch.compile 临时占用 ~2G 额外显存
-#       而失败。重启（缓存命中）即可正常。
-# ============================================================
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
 
@@ -21,11 +14,12 @@ LOG_FILE="/tmp/vllm_27b_maxctx.log"
 
 check_running
 
-print_header "Qwen3.6-27B-AWQ · 极限上下文配置"
+print_header "Qwen3.6-27B-AWQ · 73Kctx×1并发 · 48 tok/s (物理极限)"
 print_info "Qwen3.6-27B-AWQ (4-bit)" "$PORT" "$LOG_FILE"
-echo -e "${RED}⚠ 极限配置:${NC} 73,728 上下文 | 1 并发 | CUDA Graph ON"
-echo -e "${RED}⚠ 首次启动:${NC} 可能因 torch.compile 临时显存不足而失败"
-echo -e "${RED}⚠ 解决方案:${NC} 失败后再次运行此脚本即可（缓存命中）"
+echo -e "  ${CYAN}上下文:${NC}   73,728 tokens (per seq) — ${RED}物理极限${NC}"
+echo -e "  ${CYAN}并发数:${NC}   1 seq (KV池 2.48 GiB, 满ctx并发 ${RED}1.00x${NC} — 一个不剩)"
+echo -e "  ${CYAN}单TPS:${NC}    ~48 tok/s"
+echo -e "  ${RED}⚠ 首次启动:${NC} torch.compile 临时吃 ~2G → 失败; 重启即正常"
 echo ""
 
 exec python -m vllm.entrypoints.openai.api_server \

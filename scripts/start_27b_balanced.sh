@@ -1,15 +1,7 @@
 #!/bin/bash
 # ============================================================
-# Qwen3.6-27B-AWQ — 平衡配置（中等上下文·中等并发）
+# Qwen3.6-27B-AWQ · 均衡配置 (8Kctx × 2seqs = 84 tok/s)
 # ============================================================
-# 场景: 日常使用 / 中等长度文档
-# 上下文: 8,192 tokens
-# 并发:   2 seqs
-# 吞吐:   ~83.7 tok/s 总吞吐（实测）
-# 单TPS:  ~48 tok/s
-# 显存:   模型 19.0G + CUDA Graph 0.44G + KV cache 2.44G
-# ============================================================
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
 
@@ -19,10 +11,12 @@ LOG_FILE="/tmp/vllm_27b_balanced.log"
 
 check_running
 
-print_header "Qwen3.6-27B-AWQ · 平衡配置"
+print_header "Qwen3.6-27B-AWQ · 8Kctx×2并发 · 84 tok/s"
 print_info "Qwen3.6-27B-AWQ (4-bit)" "$PORT" "$LOG_FILE"
-echo -e "${YELLOW}配置:${NC}   8,192 上下文 | 2 并发 | CUDA Graph ON"
-echo -e "${YELLOW}预期:${NC}   ~84 tok/s 总吞吐 | ~48 tok/s 单请求"
+echo -e "  ${CYAN}上下文:${NC}   8,192 tokens"
+echo -e "  ${CYAN}并发数:${NC}   2 seqs (KV池 2.44 GiB, 满ctx并发 5.56x)"
+echo -e "  ${CYAN}总吞吐:${NC}   83.7 tok/s (实测)"
+echo -e "  ${CYAN}单TPS:${NC}    ~48 tok/s"
 echo ""
 
 exec python -m vllm.entrypoints.openai.api_server \

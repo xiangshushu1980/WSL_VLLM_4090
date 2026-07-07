@@ -1,15 +1,9 @@
 #!/bin/bash
 # ============================================================
-# Qwen3.6-27B-AWQ — 长上下文配置
+# Qwen3.6-27B-AWQ · 长上下文 (32Kctx × 2seqs = 87 tok/s)
 # ============================================================
-# 场景: 长文档问答 / RAG / 代码审查
-# 上下文: 32,768 tokens
-# 并发:   2 seqs
-# 吞吐:   ~87.0 tok/s 总吞吐（实测）
-# 单TPS:  ~48 tok/s
-# 显存:   模型 19.0G + CUDA Graph 0.44G + KV cache 2.44G
+# KV池 2.44 GiB, 满ctx并发 2.08x — 刚好装下2个32K请求
 # ============================================================
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
 
@@ -19,10 +13,12 @@ LOG_FILE="/tmp/vllm_27b_long.log"
 
 check_running
 
-print_header "Qwen3.6-27B-AWQ · 长上下文配置"
+print_header "Qwen3.6-27B-AWQ · 32Kctx×2并发 · 87 tok/s"
 print_info "Qwen3.6-27B-AWQ (4-bit)" "$PORT" "$LOG_FILE"
-echo -e "${YELLOW}配置:${NC}   32,768 上下文 | 2 并发 | CUDA Graph ON"
-echo -e "${YELLOW}预期:${NC}   ~87 tok/s 总吞吐 | ~48 tok/s 单请求"
+echo -e "  ${CYAN}上下文:${NC}   32,768 tokens (per seq)"
+echo -e "  ${CYAN}并发数:${NC}   2 seqs (KV池 2.44 GiB, 满ctx并发 ${YELLOW}2.08x${NC} — 勉强够)"
+echo -e "  ${CYAN}总吞吐:${NC}   87.0 tok/s (实测, 2并发)"
+echo -e "  ${CYAN}单TPS:${NC}    ~48 tok/s"
 echo ""
 
 exec python -m vllm.entrypoints.openai.api_server \

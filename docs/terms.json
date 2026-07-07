@@ -1,0 +1,915 @@
+{
+  "title": "vLLM 部署术语知识图谱",
+  "description": "vLLM 大模型推理部署中的核心术语及其关系",
+  "terms": [
+    {
+      "id": "vllm",
+      "name": "vLLM",
+      "category": "核心引擎",
+      "summary": "高性能大模型推理引擎",
+      "explanation": "vLLM 是一个开源的大语言模型（LLM）推理和服务引擎，由 UC Berkeley 开发。它的核心创新是 PagedAttention 算法，通过将 KV Cache 按页管理（类似操作系统的虚拟内存），将显存利用率从传统方案的 20-40% 提升到 96% 以上。相比 Ollama 等方案，vLLM 在多并发场景下的吞吐量可达 5-10 倍。",
+      "tags": [
+        "推理引擎",
+        "开源",
+        "高性能"
+      ]
+    },
+    {
+      "id": "pagedattention",
+      "name": "PagedAttention",
+      "category": "核心技术",
+      "summary": "按页管理 KV Cache，消灭显存碎片",
+      "explanation": "PagedAttention 是 vLLM 的核心算法创新。它借鉴操作系统虚拟内存的分页思想：将 KV Cache 切分成固定大小的「页」(block)，请求按需申请 page，不要求连续显存。\n\n传统方案中，每个请求预分配最大长度的连续 KV Cache，实际只用 20-40%，浪费 60-80% 显存。PagedAttention 让浪费率降到 <4%，同样的显存能同时服务 5-10 倍的请求数。\n\n此外，页式管理还支持 KV Cache 共享——同一个 prompt 前缀的多个请求可以共享同一份 KV Cache（配合前缀缓存），进一步提升效率。",
+      "tags": [
+        "显存管理",
+        "KV Cache",
+        "核心算法"
+      ]
+    },
+    {
+      "id": "kv-cache",
+      "name": "KV Cache",
+      "category": "核心技术",
+      "summary": "缓存注意力计算的 Key/Value 矩阵，避免重复计算",
+      "explanation": "KV Cache 是 Transformer 推理的核心优化。在自回归生成中，每个新 token 都需要对所有历史 token 做注意力计算。如果没有 KV Cache，每个新 token 都要重新计算所有历史 token 的 Key 和 Value，计算量呈 O(n²) 增长。\n\nKV Cache 将已计算的 Key/Value 矩阵缓存起来，新 token 只需计算自己的 Query 并与缓存的 Key/Value 做注意力，复杂度降为 O(n)。\n\n显存占用公式：\nKV Cache 大小 = 2 × num_layers × num_kv_heads × head_dim × dtype_bytes × seq_len\n以 Qwen3.6-27B（仅16层全注意力）为例，fp8 下每 token 约 32KB。\n\n默认情况下，KV Cache 使用与模型相同的精度（如 FP16），通过 --kv-cache-dtype fp8 可以省一半显存。",
+      "tags": [
+        "注意力机制",
+        "显存",
+        "推理优化"
+      ]
+    },
+    {
+      "id": "continuous-batching",
+      "name": "Continuous Batching",
+      "category": "核心技术",
+      "summary": "动态批次调度，请求即时加入/退出",
+      "explanation": "Continuous Batching（连续批处理）是 vLLM 的请求调度策略，区别于传统的 Static Batching（静态批处理）。\n\n传统 Static Batching：一批请求必须等所有请求都生成完毕后才能加入新请求。如果批次中有一个请求生成了 2000 个 token 而其他只生成 10 个，后者完成后 GPU 就空闲等待。\n\nContinuous Batching：请求完成一个 token 后立即从批次中移出；新请求随时可以加入当前批次；GPU 始终保持满负荷。\n\n实际效果：在高并发场景下，吞吐量比 static batching 高 2-10 倍。结合 PagedAttention，新请求加入时只需分配新的 KV Cache page，无需等待。",
+      "tags": [
+        "调度",
+        "批处理",
+        "并发"
+      ]
+    },
+    {
+      "id": "quantization",
+      "name": "量化 (Quantization)",
+      "category": "模型压缩",
+      "summary": "降低模型精度以减少显存占用",
+      "explanation": "量化是将模型权重从高精度（如 FP16/FP32）压缩到低精度（如 4-bit/8-bit）的技术。\n\n量化格式对比：\n- FP32：每个参数 4 字节，27B 模型 ≈ 108GB\n- FP16：每个参数 2 字节，27B 模型 ≈ 54GB\n- FP8：每个参数 1 字节，27B 模型 ≈ 27GB（24GB 显卡放不下）\n- AWQ 4-bit：每个参数 ~0.55 字节，27B 模型 ≈ 15-19GB ✅\n- GPTQ 4-bit：类似 AWQ，~15GB\n- GGUF IQ4_KS：每个参数 ~0.6 字节，约 20GB\n\nvLLM 原生支持 AWQ（通过 Marlin 内核加速）、GPTQ、FP8、BitsAndBytes 等格式。量化会略微降低模型质量，但 4-bit 量化在大多数任务上质量损失 <1%。",
+      "tags": [
+        "压缩",
+        "显存优化",
+        "模型加载"
+      ]
+    },
+    {
+      "id": "awq",
+      "name": "AWQ",
+      "category": "量化格式",
+      "summary": "4-bit 量化，vLLM 原生支持且加载最快",
+      "explanation": "AWQ（Activation-aware Weight Quantization）是一种 4-bit 权重量化方法。与传统统一量化不同，AWQ 通过分析激活值分布确定哪些权重通道对精度更重要，对这些通道保留更高精度。\n\n特点：4-bit 量化，文件约为 FP16 的 1/4；vLLM 原生支持，通过 Marlin 内核加速解量化；加载速度快（直接 mmap）；质量损失小（<1%）；27B 模型量化后 ~19GB，完美适配 RTX 4090。\n\nvLLM 中使用：--quantization awq 或 --quantization awq_marlin（推荐，使用 Marlin 加速内核）。",
+      "tags": [
+        "4-bit",
+        "量化",
+        "Marlin"
+      ]
+    },
+    {
+      "id": "gptq",
+      "name": "GPTQ",
+      "category": "量化格式",
+      "summary": "灵活的 4-bit 量化，vLLM 备选方案",
+      "explanation": "GPTQ（Post-Training Quantization for GPT）是一种基于逐层最优脑外科手术（OBS）的后训练量化方法。与 AWQ 类似但采用不同的权重选择策略。\n\n特点：支持 group_size 参数（g128 等），灵活平衡精度/速度；vLLM 支持良好；加载稍慢于 AWQ。用途：当模型只提供 GPTQ 格式时使用。\n\nvLLM 中使用：--quantization gptq",
+      "tags": [
+        "4-bit",
+        "量化",
+        "后训练"
+      ]
+    },
+    {
+      "id": "fp8",
+      "name": "FP8 量化",
+      "category": "量化格式",
+      "summary": "8-bit 浮点量化，质量最高但显存需求大",
+      "explanation": "FP8 是 8-bit 浮点格式，分为 E4M3（4位指数+3位尾数）和 E5M2（5位指数+2位尾数）。相比 4-bit 量化，FP8 质量损失极小，但显存节省有限（仅为 FP16 的一半）。\n\n关键限制：27B FP8 ≈ 27GB，超过 RTX 4090 的 24GB 显存，单卡无法加载。\n\n适用场景：多卡部署（--tensor-parallel-size 2+）；KV Cache 使用 fp8（--kv-cache-dtype fp8），省一半 KV 显存；70B+ 模型在 H100/A100 80GB 上部署。",
+      "tags": [
+        "8-bit",
+        "浮点量化",
+        "多卡"
+      ]
+    },
+    {
+      "id": "gguf",
+      "name": "GGUF 格式",
+      "category": "量化格式",
+      "summary": "llama.cpp 原生量化格式，单用户推理之选",
+      "explanation": "GGUF 是 llama.cpp 项目的原生模型格式，支持各种量化级别（Q2_K 到 Q8_0），每个参数可精确到 bit 级控制。\n\n特点：量化选项最丰富（Q4_K_M, IQ4_KS, Q5_K_M 等）；单文件分发，包含 tokenizer 和配置；llama.cpp/ollama 原生支持；vLLM 支持有限，不推荐用于 vLLM 生产部署；CPU 推理友好。\n\n适用场景：单用户本地推理（Ollama），不适合多并发生产。如果主要用 vLLM，优先选 AWQ 或 GPTQ。",
+      "tags": [
+        "llama.cpp",
+        "量化",
+        "单文件"
+      ]
+    },
+    {
+      "id": "gpu-memory-utilization",
+      "name": "GPU显存利用率",
+      "category": "核心参数",
+      "summary": "控制 vLLM 使用的 GPU 显存比例",
+      "explanation": "vLLM 按此比例分配 GPU 显存（0-1）。RTX 4090 WSL2 实测天花板 = 0.935（PyTorch CUDA context 固定吃掉 1.12 GiB，0.94+ 必然 OOM）。\n\n显存分配 = 0.935 × 23.99 GiB = 22.43 GiB 可用。\n组成 = 模型权重 + CUDA graph + KV cache + PyTorch 开销。\n\n调参: AWQ 模型用 0.935；大于此值启动必失败。",
+      "tags": [
+        "显存",
+        "参数",
+        "OOM"
+      ]
+    },
+    {
+      "id": "max-model-len",
+      "name": "最大模型长度",
+      "category": "核心参数",
+      "summary": "限制每个请求的最大 token 数",
+      "explanation": "--max-model-len 限制请求的最大 token 数。\n\nRTX 4090 可跑范围: 512 极短（KV cache 极小）→ 4096 常用（4 并发 @ 27B）→ 32768 长上下文（2 并发 @ 35B-A3B）→ 73728 极限（1 并发 @ 27B）。\n\n显存影响: KV cache = max_model_len × max_num_seqs × per_token_kv。27B per-token KV = 73.8 KB, 35B = 12.3 KB（fp8）。\n\n如果请求超过此长度，vLLM 截断前面的内容。",
+      "tags": [
+        "上下文",
+        "参数",
+        "KV Cache"
+      ]
+    },
+    {
+      "id": "max-num-seqs",
+      "name": "最大并发序列数",
+      "category": "核心参数",
+      "summary": "控制同时处理的最大请求数",
+      "explanation": "vLLM 同时处理的最大请求数。消费级 GPU 大幅调低（默认 256）。\n\nRTX 4090 实测:\n- 27B Dense: 4 并发 @ 4K, 2 并发 @ 32K\n- 35B-A3B MoE: 2 并发 @ 32K, 最多 3\n\n超出 max_num_seqs 的请求排队，由 continuous batching 自动调度。",
+      "tags": [
+        "并发",
+        "参数",
+        "调度"
+      ]
+    },
+    {
+      "id": "kv-cache-dtype",
+      "name": "KV Cache 精度",
+      "category": "核心参数",
+      "summary": "控制 KV Cache 的数据类型，影响显存和精度",
+      "explanation": "--kv-cache-dtype 控制 KV Cache 以什么精度存储。\n\n选项：auto（默认，与模型权重同精度如 FP16）；fp8（8-bit 浮点，省一半 KV Cache 显存，质量几乎无损）；fp8_e4m3（fp8 的 E4M3 变体）；fp8_e5m2（fp8 的 E5M2 变体）。\n\n推荐：始终设为 fp8。标准做法是「FP16 权重 + FP8 KV Cache」，兼顾模型质量与显存效率。\n\n以 RTX 4090 + 27B AWQ 为例：FP16 KV Cache 每 token ~64KB；FP8 KV Cache 每 token ~32KB；4 并发 × 8192 tokens（fp8）= ~1GB，完全可控。",
+      "tags": [
+        "精度",
+        "参数",
+        "KV Cache"
+      ]
+    },
+    {
+      "id": "enforce-eager",
+      "name": "禁用编译优化",
+      "category": "核心参数",
+      "summary": "同时禁用 torch.compile 和 CUDA Graph。对 MoE 模型是灾难性的（12x 减速）",
+      "explanation": "--enforce-eager 强制使用 eager 模式执行，同时禁用 torch.compile 和 CUDA Graph。\n\n加速效果（实测）：\n- 27B Dense: CUDA graph ON = 48 tok/s, OFF = 更高延迟\n- 35B MoE: CUDA graph ON = 133 tok/s, OFF = 10 tok/s（12x 差异！）\n\nCUDA graph 开销: 实测 ~0.46 GiB，不是社区流传的 1.5 GiB。\n\n推荐：永远不要对生产模型开启 --enforce-eager。除非需要极限压榨显存且不在乎速度，否则让 CUDA graph 和 torch.compile 保持默认开启。",
+      "tags": [
+        "CUDA",
+        "参数",
+        "优化",
+        "危险"
+      ]
+    },
+    {
+      "id": "tensor-parallel-size",
+      "name": "张量并行",
+      "category": "核心参数",
+      "summary": "将模型切分到多张 GPU 并行计算",
+      "explanation": "--tensor-parallel-size (TP) 将模型按层内切分到多张 GPU 上并行推理。\n\nTP=1 单卡推理（RTX 4090 场景）；TP=2 跨 2 张 GPU 切分；TP=4 跨 4 张 GPU 切分。\n\n工作原理：每个 Transformer 层的权重矩阵按列/行切分到不同 GPU，每张 GPU 只存储和计算一部分，通过 all-reduce 通信同步结果。\n\n注意：多卡必须通过 NVLink/PCIe 高速互联；通信开销随 GPU 数量增加，线性加速比下降；消费级显卡（RTX 4090）无 NVLink，多卡扩展效率低；单卡用户设为 1 即可。",
+      "tags": [
+        "多GPU",
+        "参数",
+        "分布式"
+      ]
+    },
+    {
+      "id": "enable-prefix-caching",
+      "name": "前缀缓存",
+      "category": "优化技术",
+      "summary": "缓存相同前缀的 KV Cache，避免重复计算",
+      "explanation": "自动检测并复用相同 prompt 前缀的 KV Cache。PagedAttention 的页式 KV Cache 天然支持共享。\n\n适用：多轮对话（相同 system prompt）、RAG（相同文档前缀）。\n\n⚠️ RTX 4090 限制: 27B @ 2048/2seqs 开启后 OOM（hash table 开销 ~0.05 GiB 超出剩余显存）。24GB 卡上不可用。",
+      "tags": [
+        "缓存",
+        "优化",
+        "KV Cache"
+      ]
+    },
+    {
+      "id": "chunked-prefill",
+      "name": "分块预填充",
+      "category": "优化技术",
+      "summary": "将长 prompt 分块处理，避免阻塞",
+      "explanation": "--enable-chunked-prefill 将长 prompt 的预填充（prefill）阶段切成多个小块处理。\n\n问题背景：Prefill 阶段一次性处理整个 prompt，计算量大；长 prompt（如 32K tokens）一次 prefill 可能耗时数秒；期间 decode 阶段的请求被阻塞，用户感知延迟增加。\n\nChunked Prefill 将 prefill 切成小块（如每块 512 tokens），在 chunk 之间插入 decode 步骤，避免长时间阻塞，改善 TTFT 的 p99 延迟。\n\nvLLM V1 默认开启此功能；V0 需要手动启用。",
+      "tags": [
+        "调度",
+        "优化",
+        "延迟"
+      ]
+    },
+    {
+      "id": "speculative-config",
+      "name": "推测解码",
+      "category": "优化技术",
+      "summary": "用小模型猜测大模型输出，加速推理",
+      "explanation": "--speculative-config 启用推测解码，需要一个草稿模型（draft model）来猜词。\n\n工作原理：小模型（draft）快速生成 K 个候选 token；大模型（target）一次验证 K 个 token；接受匹配的 token，拒绝不匹配的；匹配率高时相当于一次生成 K+1 个 token。\n\n限制：需要额外显存加载 draft model；RTX 4090 + 27B 上 draft model 额外占显存，通常不开；需要 draft 和 target 共用同一 tokenizer；数学/代码等确定性任务效果好，创意任务效果差。\n\n不推荐单卡 24GB 使用——显存太紧张。",
+      "tags": [
+        "加速",
+        "优化",
+        "双模型"
+      ]
+    },
+    {
+      "id": "language-model-only",
+      "name": "纯语言模型模式",
+      "category": "核心参数",
+      "summary": "只加载文本模型，跳过视觉编码器",
+      "explanation": "--language-model-only 告诉 vLLM 只加载语言模型部分，不加载视觉编码器（vision encoder）。\n\n适用场景：纯文本对话（不涉及图片理解）；Qwen-VL、Llama-Vision 等多模态模型做纯文生文。\n\n效果：省 ~1GB 显存（视觉编码器通常占 ~1GB）。注意：如果后续需要进行图片理解任务，不能使用此参数——需要完整加载多模态模型。",
+      "tags": [
+        "多模态",
+        "参数",
+        "显存"
+      ]
+    },
+    {
+      "id": "trust-remote-code",
+      "name": "信任远程代码",
+      "category": "核心参数",
+      "summary": "允许加载模型仓库中的自定义代码",
+      "explanation": "--trust-remote-code 允许 vLLM 执行模型仓库中的自定义 Python 代码。\n\n原因：很多模型（尤其是 Qwen 系列、DeepSeek 系列）实现了自定义的模型架构或 tokenizer，这些代码托管在 HuggingFace 仓库中。如果不启用此参数，vLLM 拒绝加载这些模型。\n\n安全考虑：启用后模型代码可以执行任意 Python；只对信任的模型仓库使用；Qwen、DeepSeek 等知名模型是安全的。典型需要此参数的情况：加载 Qwen 系列、DeepSeek 系列模型时几乎必须使用。",
+      "tags": [
+        "安全",
+        "参数",
+        "模型加载"
+      ]
+    },
+    {
+      "id": "served-model-name",
+      "name": "服务模型名",
+      "category": "核心参数",
+      "summary": "API 暴露的模型名称别名",
+      "explanation": "--served-model-name 设置 OpenAI 兼容 API 中返回的模型名称。\n\n用法：不设则 API 返回完整的模型路径（如 models/Qwen/Qwen3.6-27B-AWQ）；设置后 API 返回简洁别名（如 qwen3.6-27b）。\n\n好处：客户端代码用简短名称解耦实际路径；多版本部署时便于 A/B 测试切换；隐藏实际模型路径。",
+      "tags": [
+        "API",
+        "参数",
+        "别名"
+      ]
+    },
+    {
+      "id": "reasoning-parser",
+      "name": "推理解析器",
+      "category": "核心参数",
+      "summary": "解析模型思考链输出",
+      "explanation": "--reasoning-parser 用于解析支持思考链（Chain of Thought）模型的输出，区分思考内容和最终回答。\n\n常用值：qwen3（Qwen3 系列的  think 推理格式）；deepseek_r1（DeepSeek-R1 的推理格式）。\n\n作用：API 返回时将思考过程放入 reasoning_content 字段，最终回答放入 content 字段；支持流式推理，实时区分思考和回答。配合：需要模型本身支持推理模式（如 Qwen3.6 的思考模式）。",
+      "tags": [
+        "推理",
+        "参数",
+        "CoT"
+      ]
+    },
+    {
+      "id": "tool-call-parser",
+      "name": "工具调用解析器",
+      "category": "核心参数",
+      "summary": "解析模型的 Function Call 输出",
+      "explanation": "--tool-call-parser 指定解析模型工具调用/函数调用输出的解析器。\n\n常用值：qwen3_coder（Qwen3 Coder 的工具调用格式）；hermes（NousResearch Hermes 格式）；llama3_json（Llama 3 的 JSON function call）；mistral（Mistral 的工具调用格式）。\n\n工作流程：用户请求中包含 tools 定义 → 模型输出工具调用文本 → 解析器将文本转换为结构化的 function call → vLLM API 返回标准 OpenAI 格式的 tool_calls。\n\n配合 --enable-auto-tool-choice 可实现自动工具选择。",
+      "tags": [
+        "工具调用",
+        "参数",
+        "Function Call"
+      ]
+    },
+    {
+      "id": "ttft",
+      "name": "TTFT",
+      "category": "性能指标",
+      "summary": "首 token 延迟——用户体验的核心指标",
+      "explanation": "TTFT（Time To First Token）是从发送请求到收到第一个 token 的时间，包含：网络传输、请求排队（如果超过 max_num_seqs）、Prompt 处理（prefill）、第一个 token 生成（decode 第一步）。\n\nTTFT 是用户体验最敏感的指标——用户看到第一个字之前的等待时间。\n\n影响因素：max_num_seqs 过小 → 排队时间 ↑ → TTFT ↑；max_model_len 过大 → prefill 计算量 ↑ → TTFT ↑；启用 chunked_prefill → 改善 p99 TTFT；CUDA Graph → 减少 kernel 启动开销 → TTFT ↓。\n\n目标：< 500ms 优秀，< 2s 可接受，> 5s 需优化。",
+      "tags": [
+        "延迟",
+        "指标",
+        "用户体验"
+      ]
+    },
+    {
+      "id": "tpot",
+      "name": "TPOT",
+      "category": "性能指标",
+      "summary": "每个输出 token 的生成间隔",
+      "explanation": "TPOT（Time Per Output Token），也称 ITL（Inter-Token Latency），是连续两个输出 token 之间的时间间隔。它反映 decode 阶段的单步延迟（每次生成一个 token 的时间）。\n\n典型值：小模型 (1.5B)：5-15ms（66-200 tok/s）；中等模型 (27B AWQ)：15-30ms（33-66 tok/s）；大模型 (70B)：30-60ms（16-33 tok/s）。\n\n影响因素：模型大小、批次负载（max_num_seqs 利用率）、KV Cache 精度（fp8 vs fp16 影响不大）。注意：TPOT 与 TTFT 不同——TTFT 包含 prefill，TPOT 只是单步 decode。",
+      "tags": [
+        "延迟",
+        "指标",
+        "解码"
+      ]
+    },
+    {
+      "id": "tps",
+      "name": "TPS",
+      "category": "性能指标",
+      "summary": "每秒生成的 token 数——单请求速度",
+      "explanation": "TPS（Tokens Per Second）衡量单个请求的生成速度。TPS = 总生成 token 数 / 生成总时间（不含 TTFT），即 TPS = 1 / TPOT。\n\n典型值（RTX 4090）：Qwen2.5-1.5B 200+ tok/s；Qwen3.6-27B AWQ 35-50 tok/s；Llama 4 Scout 17B ~485 tok/s（vLLM 优化）。\n\n注意区分：TPS 是单个请求的速度；Throughput 是所有请求的总 token/总时间（含并发）。TPS 受模型大小和显存带宽限制，不受并发数影响（前提是不超过 GPU 计算能力）。",
+      "tags": [
+        "速度",
+        "指标"
+      ]
+    },
+    {
+      "id": "throughput",
+      "name": "吞吐量",
+      "category": "性能指标",
+      "summary": "系统每秒处理的总 token 数",
+      "explanation": "Throughput（吞吐量）衡量系统整体的处理能力。\n\nThroughput = 所有请求的总生成 token 数 / 总墙钟时间。\n\n这是衡量 vLLM 服务能力的关键指标——反映在给定硬件上能服务多少用户。\n\n实测数据（RTX 4090）：vLLM 单用户 485 tok/s；vLLM 4 并发 920 tok/s（~1.9x 单用户）；Ollama 4 并发 155 tok/s；vLLM vs Ollama ~6x 吞吐量优势。\n\n关系：增加 max_num_seqs → 并发 ↑ → 吞吐量 ↑（直到 GPU 满载）；继续增加 → GPU 满载 → 吞吐量持平，TTFT 恶化。最佳并发数：找到吞吐量饱和点前的最优值。",
+      "tags": [
+        "吞吐",
+        "指标",
+        "并发"
+      ]
+    },
+    {
+      "id": "cuda-graph",
+      "name": "CUDA Graph",
+      "category": "优化技术",
+      "summary": "合并 CUDA kernel 调用，对 MoE 模型加速 12x",
+      "explanation": "CUDA Graph 将一系列 CUDA kernel 调用预录制为图，之后一次提交执行，消除 CPU-GPU 通信延迟。\n\nvLLM 使用 FULL_AND_PIECEWISE 模式：FULL graph 覆盖 decode、PIECEWISE graph 覆盖 prefill。最大 graph 数量由 max_num_seqs 决定。\n\n实测开销: 27B@4seqs = 0.48 GiB, 35B@2seqs = 0.46 GiB（不是社区流传的 1.5 GiB）。\n\n性能影响（实测）: 27B Dense 约 1.3x 加速；35B MoE 约 12x 加速（133→10 tok/s 关闭后）。MoE 模型依赖 CUDA graph 的程度远超 Dense 模型。",
+      "tags": [
+        "CUDA",
+        "优化",
+        "kernel"
+      ]
+    },
+    {
+      "id": "flashinfer",
+      "name": "FlashInfer",
+      "category": "底层库",
+      "summary": "高性能注意力计算内核库",
+      "explanation": "FlashInfer 是 vLLM 使用的高性能注意力计算内核库，提供优化的 GPU kernel 实现。\n\n功能：FlashAttention 风格的优化注意力；高效的 KV Cache 读写；PagedAttention 的底层实现；支持多种 attention 变体。\n\n兼容性问题：CUDA 13 + 旧版 CCCL 可能导致编译失败；可通过 VLLM_USE_FLASHINFER_SAMPLER=0 降级；或使用 VLLM_ATTENTION_BACKEND=TRITON_ATTN 切换到 Triton。\n\n版本要求：0.6.13+ 修复了 CCCL 兼容问题；需配合系统 GCC/G++ 编译器。",
+      "tags": [
+        "attention",
+        "kernel",
+        "编译"
+      ]
+    },
+    {
+      "id": "triton-attention",
+      "name": "Triton Attention",
+      "category": "底层库",
+      "summary": "基于 Triton 的注意力后端，兼容性好但稍慢",
+      "explanation": "Triton Attention 是基于 OpenAI Triton 语言的注意力计算后端。\n\nvs FlashInfer：FlashInfer 是 CUDA C++ 手写 kernel，性能最优；Triton Attention 是 Python 写 kernel，Triton 编译为 GPU 代码。\n\n优势：兼容性好，不依赖特定 CUDA/CCCL 版本；当 FlashInfer 编译失败时的首选替代方案。\n\n使用：export VLLM_ATTENTION_BACKEND=TRITON_ATTN。性能：比 FlashInfer 慢 10-30%，但在 WSL/CUDA 13 环境下是最稳定的选择。",
+      "tags": [
+        "attention",
+        "Triton",
+        "兼容性"
+      ]
+    },
+    {
+      "id": "marlin",
+      "name": "Marlin 内核",
+      "category": "底层库",
+      "summary": "AWQ 模型的解量化加速内核，比 awq 快 7.7x",
+      "explanation": "Marlin 是专门为 AWQ 4-bit 量化模型优化的 GPU kernel，将解量化开销与矩阵乘法融合。\n\n效果（实测 RTX 4090 + 27B）: awq + eager = 6.2 tok/s, awq_marlin + CUDA graph = 48.0 tok/s（7.7x 加速）。\n\nvLLM 中使用: --quantization awq_marlin（必须！）。注意: awq_marlin 需要 CUDA compute capability 8.0+（RTX 4090 SM 8.9 满足）。",
+      "tags": [
+        "kernel",
+        "加速",
+        "AWQ"
+      ]
+    },
+    {
+      "id": "moe",
+      "name": "MoE (混合专家)",
+      "category": "模型架构",
+      "summary": "稀疏激活架构，总参数大但计算量小",
+      "explanation": "MoE 稀疏模型架构：模型包含多个「专家」子网络（256 个），每个 token 只激活 top-8 专家。\n\nRTX 4090 实测: Qwen3.6-35B-A3B（35B/3B 激活，AWQ 20.27 GiB）。\n- 32K 上下文 2 并发: 355.8 tok/s（vLLM + CUDA graph）\n- per-token KV 仅 ~12 KB（10 全注意力层）\n- 是 27B Dense 同配置的 4.1x 速度\n\n⚠️ CUDA graph 对 MoE 至关重要: 关闭后 133→10 tok/s（12x 差异）。",
+      "tags": [
+        "架构",
+        "稀疏",
+        "大模型"
+      ]
+    },
+    {
+      "id": "dense-model",
+      "name": "Dense 模型",
+      "category": "模型架构",
+      "summary": "全参数激活的密集型模型",
+      "explanation": "Dense 模型每个 token 都要经过所有参数计算。质量通常高于同参数 MoE（但计算量大）。\n\nRTX 4090 实测: Qwen3.6-27B AWQ（19.05 GiB 加载）\n- 4K 上下文 4 并发: 167.6 tok/s\n- 32K 上下文 2 并发: 87.0 tok/s\n- per-token KV: ~73.8 KB（16 全注意力层，fp8）\n\nvs MoE: 35B-A3B MoE 在 32K 下速度是 27B 的 4.1x（356 vs 87 tok/s），per-token KV 仅 1/6。",
+      "tags": [
+        "架构",
+        "全参数"
+      ]
+    },
+    {
+      "id": "deltanet",
+      "name": "DeltaNet",
+      "category": "模型架构",
+      "summary": "线性注意力替代方案，Qwen3.6 大幅减少 KV cache",
+      "explanation": "DeltaNet 是一种线性注意力机制，替代 Transformer 层的标准自注意力。\n\nQwen3.6-27B: 64 层中 48 层 DeltaNet + 16 层全注意力\nQwen3.6-35B-A3B: 40 层中 30 层 DeltaNet + 10 层全注意力\n\nDeltaNet 层不需要 KV Cache。只有全注意力层需要。\n\nper-token KV 实测 (fp8): 27B = ~73.8 KB, 35B = ~12.3 KB\n\n35B-A3B 比 27B KV cache 少 83%，这是它能在 32K 上下文跑 2 并发的关键。",
+      "tags": [
+        "架构",
+        "注意力",
+        "Qwen"
+      ]
+    },
+    {
+      "id": "wsl2",
+      "name": "WSL2",
+      "category": "环境配置",
+      "summary": "Windows Subsystem for Linux 2",
+      "explanation": "WSL2 是 Windows 上的 Linux 子系统，vLLM 可以在 WSL2 中运行（利用 GPU 直通）。\n\n注意事项：网络：WSL2 有独立 IP，不能用 localhost 访问（使用 hostname -I 获取 WSL IP）；显存：WSL2 默认占用 50% 系统内存，需配 .wslconfig；多进程：必须设置 VLLM_WORKER_MULTIPROC_METHOD=spawn；CUDA：需要 WSL2 专用 NVIDIA 驱动。\n\n性能：WSL2 GPU 直通性能接近原生 Linux (~95%)；不需要双系统，开发体验好。",
+      "tags": [
+        "Windows",
+        "环境",
+        "网络"
+      ]
+    },
+    {
+      "id": "cuda-visible-devices",
+      "name": "CUDA_VISIBLE_DEVICES",
+      "category": "环境配置",
+      "summary": "指定 vLLM 使用的 GPU",
+      "explanation": "CUDA_VISIBLE_DEVICES 环境变量控制哪些 GPU 对进程可见。\n\n用法：CUDA_VISIBLE_DEVICES=0（只使用 GPU 0）；CUDA_VISIBLE_DEVICES=0,1（使用 GPU 0 和 1，多卡）；CUDA_VISIBLE_DEVICES=1（跳过 GPU 0，用 GPU 1）。\n\n场景：多 GPU 系统中指定某张卡跑 vLLM；隔离不同服务到不同 GPU；测试时避免占用正在使用的 GPU。配合：--tensor-parallel-size 需等于可见 GPU 数。",
+      "tags": [
+        "GPU",
+        "环境变量",
+        "多卡"
+      ]
+    },
+    {
+      "id": "vllm-worker-multiproc-method",
+      "name": "Worker 多进程方式",
+      "category": "环境配置",
+      "summary": "vLLM 启动 worker 进程的方式",
+      "explanation": "VLLM_WORKER_MULTIPROC_METHOD 控制 vLLM 如何启动 worker 子进程。\n\n值：spawn（推荐用于 WSL/Windows）；fork（Linux 默认，WSL 不可用）。\n\nWSL 限制：WSL2 不支持 fork() 系统调用，必须使用 spawn 方式。如果不设置，vLLM 会因 fork 失败而无法启动。\n\n设置：export VLLM_WORKER_MULTIPROC_METHOD=spawn",
+      "tags": [
+        "环境变量",
+        "WSL",
+        "多进程"
+      ]
+    },
+    {
+      "id": "oom",
+      "name": "OOM (显存不足)",
+      "category": "故障诊断",
+      "summary": "显存不足错误，最常见部署问题",
+      "explanation": "OOM（Out of Memory）是 vLLM 部署中最常见的错误。\n\n三种 OOM 场景：\n1. 加载阶段 OOM：模型权重超过可用显存 → 换更小量化（FP8→AWQ）或换更小模型\n2. 首次请求 OOM：KV Cache 分配过大 → 降低 --max-model-len 或 --gpu-memory-utilization\n3. 并发请求 OOM：多个请求的 KV Cache 累积超过限制 → 降低 --max-num-seqs 或 --max-model-len\n\n诊断：查看 vLLM 启动日志的 Model loading took X GiB 行；手动计算 权重 + KV Cache + 开销 是否 < 24GB × 利用率。",
+      "tags": [
+        "错误",
+        "显存",
+        "诊断"
+      ]
+    },
+    {
+      "id": "vram",
+      "name": "VRAM 显存",
+      "category": "硬件",
+      "summary": "GPU 专用视频内存",
+      "explanation": "VRAM（Video RAM）是 GPU 的高速专用内存，vLLM 所有计算都在 VRAM 中进行。\n\nRTX 4090：24GB GDDR6X VRAM；带宽 1,008 GB/s；推理中带宽通常是瓶颈（而非算力）。\n\n显存分配（vLLM 视角）：1. 模型权重：加载后占用的显存（量化影响最大）；2. KV Cache 池：按 PagedAttention 分页管理；3. CUDA Graph 缓存：如果启用；4. 框架开销：激活值、临时缓冲区等。\n\n经验法则：24GB 显存 = 最多跑 ~20GB 量化模型（留 4GB 给 KV Cache + 开销）；同等级模型量化 4-bit 后约 55% 原大小。",
+      "tags": [
+        "硬件",
+        "显存",
+        "RTX 4090"
+      ]
+    },
+    {
+      "id": "rtx4090",
+      "name": "RTX 4090",
+      "category": "硬件",
+      "summary": "24GB 消费级旗舰 GPU，vLLM 单卡甜点",
+      "explanation": "RTX 4090 24GB GDDR6X, Ada Lovelace SM 8.9, 1008 GB/s 带宽。\n\n实测 vLLM 部署:\n- 🥇 Qwen3.6-35B-A3B MoE: 32K/2并发 @ 356 tok/s\n- 🥈 Qwen3.6-27B Dense: 4K/4并发 @ 168 tok/s\n\n不能做: FP16 27B+（放不下）；多卡扩展（无 NVLink）；投机解码（额外 ~1 GiB 不够）。gpu_memory_utilization 天花板 = 0.935。",
+      "tags": [
+        "硬件",
+        "NVIDIA",
+        "24GB"
+      ]
+    },
+    {
+      "id": "openai-compatible-api",
+      "name": "OpenAI 兼容 API",
+      "category": "接口协议",
+      "summary": "vLLM 实现的标准 API 接口",
+      "explanation": "vLLM 提供与 OpenAI API 完全兼容的 HTTP 接口，任何使用 OpenAI SDK 的代码可以零改动切换到 vLLM。\n\n支持端点：/v1/models（模型列表）、/v1/chat/completions（对话补全，最常用）、/v1/completions（文本补全）、/v1/embeddings（嵌入向量）。\n\n特性：流式输出（stream=true）；Tool/Function Calling；多模态输入（图片）；--served-model-name 自定义模型名。\n\n使用示例：from openai import OpenAI; client = OpenAI(api_key='EMPTY', base_url='http://host:8000/v1')",
+      "tags": [
+        "API",
+        "OpenAI",
+        "HTTP"
+      ]
+    },
+    {
+      "id": "prefill",
+      "name": "Prefill 阶段",
+      "category": "推理流程",
+      "summary": "一次性处理所有输入 token 的阶段",
+      "explanation": "Prefill（预填充）是 LLM 推理的第一个阶段。\n\n过程：接收完整 prompt → 一次性将所有 prompt token 过模型 → 计算每个位置的 Key 和 Value 并存入 KV Cache → 生成第一个 token。\n\n特点：计算密集型（compute-bound），同时处理所有 prompt token；长 prompt prefill 可能耗时数秒（32K tokens ~2-5秒）；在此期间其他 decode 请求被阻塞。\n\n优化：Chunked Prefill 将长 prefill 切块，交替执行 decode；Prefix Caching 相同前缀可复用 KV Cache 跳过 prefill。Prefill 时间直接影响 TTFT。",
+      "tags": [
+        "推理",
+        "计算",
+        "KV Cache"
+      ]
+    },
+    {
+      "id": "decode",
+      "name": "Decode 阶段",
+      "category": "推理流程",
+      "summary": "逐个生成 token 的自回归阶段",
+      "explanation": "Decode（解码）是 LLM 推理的第二个阶段，用于逐个生成输出 token。\n\n过程：用上一个 token 做输入 → 从 KV Cache 读取历史 Key/Value → 计算注意力 + MLP → 生成下一个 token → 新 token 的 KV 存入 KV Cache → 循环直到生成 EOS 或达到 max_tokens。\n\n特点：显存带宽密集型（memory-bound），每次只处理 1 个新 token；瓶颈在 KV Cache 读取速度（显存带宽）；每个 decode step 延迟 = TPOT。\n\nContinuous Batching 在这里发挥作用：多个请求的 decode step 可以合并为一个 batch，提高 GPU 利用率。",
+      "tags": [
+        "推理",
+        "自回归",
+        "生成"
+      ]
+    },
+    {
+      "id": "jit",
+      "name": "JIT 编译",
+      "category": "底层技术",
+      "summary": "运行时编译 CUDA kernel，首次请求慢",
+      "explanation": "JIT（Just-In-Time）编译是 vLLM 在首次运行时编译 CUDA kernel 的过程。\n\n影响：首次启动慢（编译 kernel）；首次请求可能额外慢（触发懒编译）；编译产物缓存后，后续请求正常速度。\n\n常见问题：flashinfer JIT 编译失败（CUDA/CCCL 版本不兼容）；缺少编译器（gcc/g++）；首次请求静默等待 30-60 秒（看起来像卡住）。\n\n缓解：确保 CUDA_HOME 和 PATH 正确；装好 GCC/G++ 工具链；启动后发一个 warmup 请求触发 JIT。提示：如果启动后 curl 卡住 30 秒然后正常，就是 JIT 编译。这是正常现象，只需等一次。",
+      "tags": [
+        "编译",
+        "CUDA",
+        "首次启动"
+      ]
+    }
+  ],
+  "relations": [
+    {
+      "source": "vllm",
+      "target": "pagedattention",
+      "type": "核心算法"
+    },
+    {
+      "source": "vllm",
+      "target": "continuous-batching",
+      "type": "调度策略"
+    },
+    {
+      "source": "vllm",
+      "target": "openai-compatible-api",
+      "type": "对外接口"
+    },
+    {
+      "source": "vllm",
+      "target": "quantization",
+      "type": "支持功能"
+    },
+    {
+      "source": "pagedattention",
+      "target": "kv-cache",
+      "type": "管理对象"
+    },
+    {
+      "source": "pagedattention",
+      "target": "enable-prefix-caching",
+      "type": "使能技术"
+    },
+    {
+      "source": "pagedattention",
+      "target": "flashinfer",
+      "type": "底层实现"
+    },
+    {
+      "source": "pagedattention",
+      "target": "triton-attention",
+      "type": "替代实现"
+    },
+    {
+      "source": "kv-cache",
+      "target": "kv-cache-dtype",
+      "type": "精度控制"
+    },
+    {
+      "source": "kv-cache",
+      "target": "max-model-len",
+      "type": "大小限制"
+    },
+    {
+      "source": "kv-cache",
+      "target": "max-num-seqs",
+      "type": "并发限制"
+    },
+    {
+      "source": "kv-cache",
+      "target": "prefill",
+      "type": "写入阶段"
+    },
+    {
+      "source": "kv-cache",
+      "target": "decode",
+      "type": "读取阶段"
+    },
+    {
+      "source": "continuous-batching",
+      "target": "max-num-seqs",
+      "type": "并发上限"
+    },
+    {
+      "source": "continuous-batching",
+      "target": "decode",
+      "type": "主要优化阶段"
+    },
+    {
+      "source": "continuous-batching",
+      "target": "chunked-prefill",
+      "type": "协作优化"
+    },
+    {
+      "source": "quantization",
+      "target": "awq",
+      "type": "推荐格式"
+    },
+    {
+      "source": "quantization",
+      "target": "gptq",
+      "type": "备选格式"
+    },
+    {
+      "source": "quantization",
+      "target": "fp8",
+      "type": "高精度格式"
+    },
+    {
+      "source": "quantization",
+      "target": "gguf",
+      "type": "本地格式"
+    },
+    {
+      "source": "quantization",
+      "target": "vram",
+      "type": "降低显存占用"
+    },
+    {
+      "source": "awq",
+      "target": "marlin",
+      "type": "加速内核"
+    },
+    {
+      "source": "awq",
+      "target": "rtx4090",
+      "type": "最佳适配"
+    },
+    {
+      "source": "fp8",
+      "target": "kv-cache-dtype",
+      "type": "主要用于KV"
+    },
+    {
+      "source": "gpu-memory-utilization",
+      "target": "vram",
+      "type": "比例控制"
+    },
+    {
+      "source": "gpu-memory-utilization",
+      "target": "oom",
+      "type": "首要调参"
+    },
+    {
+      "source": "gpu-memory-utilization",
+      "target": "max-num-seqs",
+      "type": "间接限制"
+    },
+    {
+      "source": "max-model-len",
+      "target": "kv-cache",
+      "type": "影响KV大小"
+    },
+    {
+      "source": "max-model-len",
+      "target": "oom",
+      "type": "超限导致OOM"
+    },
+    {
+      "source": "max-num-seqs",
+      "target": "throughput",
+      "type": "直接影响"
+    },
+    {
+      "source": "max-num-seqs",
+      "target": "ttft",
+      "type": "排队影响"
+    },
+    {
+      "source": "enforce-eager",
+      "target": "cuda-graph",
+      "type": "禁用对象"
+    },
+    {
+      "source": "enforce-eager",
+      "target": "vram",
+      "type": "省显存"
+    },
+    {
+      "source": "cuda-graph",
+      "target": "decode",
+      "type": "优化阶段"
+    },
+    {
+      "source": "cuda-graph",
+      "target": "jit",
+      "type": "首次编译"
+    },
+    {
+      "source": "tensor-parallel-size",
+      "target": "cuda-visible-devices",
+      "type": "配合使用"
+    },
+    {
+      "source": "tensor-parallel-size",
+      "target": "vram",
+      "type": "分摊显存"
+    },
+    {
+      "source": "triton-attention",
+      "target": "flashinfer",
+      "type": "替代方案"
+    },
+    {
+      "source": "triton-attention",
+      "target": "wsl2",
+      "type": "更兼容"
+    },
+    {
+      "source": "flashinfer",
+      "target": "jit",
+      "type": "JIT编译"
+    },
+    {
+      "source": "flashinfer",
+      "target": "wsl2",
+      "type": "可能不兼容"
+    },
+    {
+      "source": "moe",
+      "target": "dense-model",
+      "type": "对比架构"
+    },
+    {
+      "source": "moe",
+      "target": "rtx4090",
+      "type": "最佳模型"
+    },
+    {
+      "source": "moe",
+      "target": "quantization",
+      "type": "配合量化"
+    },
+    {
+      "source": "dense-model",
+      "target": "deltanet",
+      "type": "注意力变体"
+    },
+    {
+      "source": "deltanet",
+      "target": "kv-cache",
+      "type": "降低KV开销"
+    },
+    {
+      "source": "ttft",
+      "target": "prefill",
+      "type": "主要组成"
+    },
+    {
+      "source": "ttft",
+      "target": "max-num-seqs",
+      "type": "排队影响"
+    },
+    {
+      "source": "ttft",
+      "target": "chunked-prefill",
+      "type": "优化手段"
+    },
+    {
+      "source": "tpot",
+      "target": "decode",
+      "type": "单步延迟"
+    },
+    {
+      "source": "tpot",
+      "target": "tps",
+      "type": "倒数关系"
+    },
+    {
+      "source": "tps",
+      "target": "throughput",
+      "type": "单请求速度"
+    },
+    {
+      "source": "throughput",
+      "target": "continuous-batching",
+      "type": "核心优化目标"
+    },
+    {
+      "source": "wsl2",
+      "target": "vllm-worker-multiproc-method",
+      "type": "必须spawn"
+    },
+    {
+      "source": "wsl2",
+      "target": "jit",
+      "type": "工具链要求"
+    },
+    {
+      "source": "rtx4090",
+      "target": "vram",
+      "type": "物理硬件"
+    },
+    {
+      "source": "rtx4090",
+      "target": "oom",
+      "type": "24GB上限"
+    },
+    {
+      "source": "enable-prefix-caching",
+      "target": "pagedattention",
+      "type": "利用页共享"
+    },
+    {
+      "source": "enable-prefix-caching",
+      "target": "prefill",
+      "type": "跳过重复prefill"
+    },
+    {
+      "source": "enable-prefix-caching",
+      "target": "kv-cache",
+      "type": "复用KV"
+    },
+    {
+      "source": "chunked-prefill",
+      "target": "prefill",
+      "type": "拆分执行"
+    },
+    {
+      "source": "chunked-prefill",
+      "target": "decode",
+      "type": "交错执行"
+    },
+    {
+      "source": "chunked-prefill",
+      "target": "ttft",
+      "type": "提升p99"
+    },
+    {
+      "source": "speculative-config",
+      "target": "decode",
+      "type": "加速解码"
+    },
+    {
+      "source": "speculative-config",
+      "target": "vram",
+      "type": "额外显存"
+    },
+    {
+      "source": "reasoning-parser",
+      "target": "openai-compatible-api",
+      "type": "API增强"
+    },
+    {
+      "source": "tool-call-parser",
+      "target": "openai-compatible-api",
+      "type": "API增强"
+    },
+    {
+      "source": "oom",
+      "target": "gpu-memory-utilization",
+      "type": "首要排查"
+    },
+    {
+      "source": "oom",
+      "target": "max-model-len",
+      "type": "次要排查"
+    },
+    {
+      "source": "oom",
+      "target": "quantization",
+      "type": "根本方案"
+    },
+    {
+      "source": "language-model-only",
+      "target": "vram",
+      "type": "省显存"
+    },
+    {
+      "source": "trust-remote-code",
+      "target": "quantization",
+      "type": "加载自定义模型"
+    },
+    {
+      "source": "served-model-name",
+      "target": "openai-compatible-api",
+      "type": "别名设置"
+    },
+    {
+      "source": "gguf",
+      "target": "rtx4090",
+      "type": "非vLLM方案"
+    },
+    {
+      "source": "marlin",
+      "target": "awq",
+      "type": "专用于AWQ"
+    },
+    {
+      "source": "prefill",
+      "target": "decode",
+      "type": "推理两阶段"
+    }
+  ]
+}

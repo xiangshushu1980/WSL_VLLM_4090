@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>vLLM 部署术语知识图谱</title>
+<style>
+  :root {
+    --bg: #0f0f14;
+    --panel-bg: #18181f;
+    --text: #e0e0e8;
+    --text-dim: #9090a0;
+    --accent: #6c8cff;
+    --accent-glow: rgba(108, 140, 255, 0.3);
+    --border: #2a2a38;
+    --hover: #252530;
+    --tag-bg: #1e1e2e;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* ── 顶部栏 ── */
+  .topbar {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 20px;
+    background: var(--panel-bg);
+    border-bottom: 1px solid var(--border);
+    z-index: 10;
+    position: relative;
+  }
+  .topbar h1 {
+    font-size: 1.15rem;
+    font-weight: 600;
+    white-space: nowrap;
+    background: linear-gradient(135deg, var(--accent), #a78bfa);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .topbar .badge {
+    font-size: 0.7rem;
+    padding: 2px 8px;
+    border-radius: 99px;
+    background: var(--tag-bg);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+  }
+  .topbar input {
+    flex: 1; max-width: 320px; margin-left: auto;
+    padding: 6px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 0.85rem;
+    outline: none;
+  }
+  .topbar input:focus { border-color: var(--accent); }
+
+  /* ── 主布局 ── */
+  .main { display: flex; height: calc(100vh - 48px); }
+
+  /* ── 图区域 ── */
+  .graph-area { flex: 1; position: relative; cursor: grab; }
+  .graph-area:active { cursor: grabbing; }
+  .graph-area svg { width: 100%; height: 100%; }
+
+  /* 提示条 */
+  .hint {
+    position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
+    font-size: 0.75rem; color: var(--text-dim);
+    background: var(--panel-bg); padding: 6px 14px;
+    border-radius: 99px; border: 1px solid var(--border);
+    pointer-events: none;
+  }
+
+  /* ── 侧边详情面板 ── */
+  .sidebar {
+    width: 400px;
+    background: var(--panel-bg);
+    border-left: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+    transition: width 0.2s;
+  }
+  .sidebar.collapsed { width: 0; border-left: none; }
+
+  .sidebar-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+  }
+  .sidebar-header h3 { font-size: 0.9rem; color: var(--text-dim); }
+  .sidebar-header button {
+    background: none; border: none; color: var(--text-dim);
+    cursor: pointer; font-size: 1.1rem; padding: 4px;
+  }
+  .sidebar-header button:hover { color: var(--text); }
+
+  .sidebar-body {
+    flex: 1; overflow-y: auto; padding: 18px;
+  }
+
+  .sidebar-body .empty {
+    text-align: center; color: var(--text-dim); margin-top: 60px;
+    font-size: 0.85rem; line-height: 1.8;
+  }
+  .sidebar-body .empty .icon { font-size: 2.5rem; display: block; margin-bottom: 10px; }
+
+  /* 详情卡片 */
+  .detail-card .name {
+    font-size: 1.3rem; font-weight: 700; margin-bottom: 2px;
+  }
+  .detail-card .category {
+    display: inline-block; font-size: 0.7rem; padding: 2px 8px;
+    border-radius: 4px; background: var(--tag-bg);
+    color: var(--accent); margin-bottom: 10px;
+  }
+  .detail-card .summary {
+    font-size: 0.9rem; color: #c0c0d0; margin-bottom: 14px;
+    padding: 8px 12px; background: var(--hover);
+    border-radius: 6px; border-left: 3px solid var(--accent);
+  }
+  .detail-card .explanation {
+    font-size: 0.82rem; line-height: 1.75; color: #b0b0c0;
+    white-space: pre-line;
+  }
+  .detail-card .tags {
+    margin-top: 14px; display: flex; flex-wrap: wrap; gap: 6px;
+  }
+  .detail-card .tags span {
+    font-size: 0.7rem; padding: 2px 8px;
+    border-radius: 99px; background: var(--tag-bg);
+    color: var(--text-dim); border: 1px solid var(--border);
+  }
+
+  .detail-card .links {
+    margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px;
+  }
+  .detail-card .links h4 {
+    font-size: 0.75rem; color: var(--text-dim); margin-bottom: 8px;
+  }
+  .detail-card .links .link-item {
+    display: inline-block; font-size: 0.75rem; padding: 3px 8px;
+    margin: 2px 4px 2px 0; border-radius: 4px;
+    background: var(--hover); cursor: pointer;
+    border: 1px solid transparent;
+    transition: border-color 0.15s;
+  }
+  .detail-card .links .link-item:hover { border-color: var(--accent); }
+  .detail-card .links .link-item .rel { color: var(--text-dim); font-size: 0.65rem; }
+
+  /* ── SVG 节点与连线 ── */
+  .link-line { stroke: #333348; stroke-opacity: 0.6; }
+  .link-line:hover { stroke: var(--accent); stroke-opacity: 0.8; }
+
+  .node-circle { stroke-width: 2px; cursor: pointer; transition: stroke-width 0.15s; }
+  .node-circle:hover { stroke-width: 3px; filter: brightness(1.3); }
+
+  .node-label {
+    font-size: 11px; fill: #c0c0d0;
+    pointer-events: none;
+    text-anchor: middle;
+    paint-order: stroke;
+    stroke: var(--bg);
+    stroke-width: 3px;
+    stroke-linejoin: round;
+  }
+
+  /* 图例 */
+  .legend {
+    position: absolute; top: 12px; right: 12px;
+    display: flex; flex-wrap: wrap; gap: 6px 14px;
+    background: var(--panel-bg); padding: 8px 12px;
+    border-radius: 8px; border: 1px solid var(--border);
+    font-size: 0.7rem;
+  }
+  .legend-item { display: flex; align-items: center; gap: 5px; }
+  .legend-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>vLLM 部署术语 · 知识图谱</h1>
+  <span class="badge" id="node-count"></span>
+  <input type="text" id="search" placeholder="搜索术语...">
+</div>
+
+<div class="main">
+  <div class="graph-area" id="graph-area">
+    <svg id="graph-svg"></svg>
+    <div class="legend" id="legend"></div>
+    <div class="hint">🖱 拖拽画布 | 滚轮缩放 | 拖拽节点 | 点击查看详情</div>
+  </div>
+
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <h3 id="sidebar-title">术语详情</h3>
+      <button id="sidebar-close" title="关闭">✕</button>
+    </div>
+    <div class="sidebar-body" id="sidebar-body">
+      <div class="empty">
+        <span class="icon">🔍</span>
+        点击图中任意节点<br>查看详细解释
+      </div>
+    </div>
+  </aside>
+</div>
+
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script>
+// ═══════════════════════════════════════════
+// 加载数据
+// ═══════════════════════════════════════════
+let termsData = null;
+
+async function init() {
+  const resp = await fetch("terms.json");
+  termsData = await resp.json();
+
+  document.getElementById("node-count").textContent =
+    `${termsData.terms.length} 术语 · ${termsData.relations.length} 关系`;
+
+  buildLegend();
+  buildGraph();
+  setupSearch();
+}
+
+// ═══════════════════════════════════════════
+// 图例
+// ═══════════════════════════════════════════
+const CATEGORY_COLORS = {
+  "核心引擎":   "#ff6b6b",
+  "核心技术":   "#ffa94d",
+  "核心参数":   "#4dabf7",
+  "模型压缩":   "#748ffc",
+  "量化格式":   "#9775fa",
+  "优化技术":   "#20c997",
+  "性能指标":   "#f06595",
+  "底层库":     "#faa2c1",
+  "底层技术":   "#faa2c1",
+  "模型架构":   "#da77f2",
+  "环境配置":   "#63e6be",
+  "硬件":       "#ffd43b",
+  "故障诊断":   "#ff8787",
+  "接口协议":   "#74c0fc",
+  "推理流程":   "#69db7c",
+};
+
+function buildLegend() {
+  const cats = [...new Set(termsData.terms.map(t => t.category))];
+  document.getElementById("legend").innerHTML = cats.map(c =>
+    `<div class="legend-item">
+      <span class="legend-dot" style="background:${CATEGORY_COLORS[c]||"#888"}"></span>
+      ${c}
+    </div>`
+  ).join("");
+}
+
+// ═══════════════════════════════════════════
+// 力导向图
+// ═══════════════════════════════════════════
+let simulation, svg, gLinks, gNodes, gLabels;
+let currentDetail = null;
+
+function buildGraph() {
+  const area = document.getElementById("graph-area");
+  const svgEl = document.getElementById("graph-svg");
+  const W = area.clientWidth;
+  const H = area.clientHeight;
+
+  svg = d3.select("#graph-svg")
+    .attr("viewBox", [0, 0, W, H]);
+
+  // 缩放
+  const gRoot = svg.append("g");
+  svg.call(d3.zoom()
+    .scaleExtent([0.15, 4])
+    .on("zoom", (e) => gRoot.attr("transform", e.transform))
+  );
+
+  // 渐变定义
+  const defs = svg.append("defs");
+
+  // 数据映射
+  const nodes = termsData.terms.map(t => ({...t}));
+  const nodeMap = new Map(nodes.map(n => [n.id, n]));
+  const links = termsData.relations
+    .filter(r => nodeMap.has(r.source) && nodeMap.has(r.target))
+    .map(r => ({
+      source: r.source,
+      target: r.target,
+      type: r.type,
+    }));
+
+  // 连线
+  gLinks = gRoot.append("g");
+  const linkEl = gLinks.selectAll("line")
+    .data(links)
+    .join("line")
+    .attr("class", "link-line")
+    .attr("stroke-width", 0.8);
+
+  // 连线标签
+  const linkLabel = gLinks.selectAll("text")
+    .data(links)
+    .join("text")
+    .attr("class", "node-label")
+    .style("font-size", "8px")
+    .style("fill", "#606080")
+    .text(d => d.type);
+
+  // 节点
+  gNodes = gRoot.append("g");
+  const nodeEl = gNodes.selectAll("g")
+    .data(nodes)
+    .join("g")
+    .attr("cursor", "pointer")
+    .call(d3.drag()
+      .on("start", (e, d) => {
+        if (!e.active) simulation.alphaTarget(0.3).restart();
+        d.fx = d.x; d.fy = d.y;
+      })
+      .on("drag", (e, d) => { d.fx = e.x; d.fy = e.y; })
+      .on("end", (e, d) => {
+        if (!e.active) simulation.alphaTarget(0);
+        d.fx = null; d.fy = null;
+      })
+    )
+    .on("click", (e, d) => { e.stopPropagation(); showDetail(d); });
+
+  // 节点圆
+  nodeEl.append("circle")
+    .attr("class", "node-circle")
+    .attr("r", d => {
+      // 核心概念大一点
+      const big = ["vllm", "pagedattention", "kv-cache", "continuous-batching", "quantization"];
+      return big.includes(d.id) ? 12 : d.category === "核心参数" ? 8 : 7;
+    })
+    .attr("fill", d => CATEGORY_COLORS[d.category] || "#888")
+    .attr("stroke", d => d3.color(CATEGORY_COLORS[d.category] || "#888").darker(0.4));
+
+  // 节点标签
+  gLabels = gRoot.append("g");
+  const labelEl = gLabels.selectAll("text")
+    .data(nodes)
+    .join("text")
+    .attr("class", "node-label")
+    .text(d => d.name.length > 12 ? d.name.slice(0,11) + "…" : d.name)
+    .style("font-size", d => {
+      const big = ["vllm", "pagedattention", "kv-cache", "continuous-batching"];
+      return big.includes(d.id) ? "14px" : "11px";
+    })
+    .style("font-weight", d => {
+      const big = ["vllm", "pagedattention", "kv-cache", "continuous-batching", "quantization"];
+      return big.includes(d.id) ? "700" : "400";
+    });
+
+  // 模拟
+  simulation = d3.forceSimulation(nodes)
+    .force("link", d3.forceLink(links).id(d => d.id).distance(d => {
+      // 同类别更近
+      const s = nodeMap.get(typeof d.source === "object" ? d.source.id : d.source);
+      const t = nodeMap.get(typeof d.target === "object" ? d.target.id : d.target);
+      return s && t && s.category === t.category ? 90 : 160;
+    }))
+    .force("charge", d3.forceManyBody().strength(-350))
+    .force("center", d3.forceCenter(W / 2, H / 2))
+    .force("collision", d3.forceCollide(24))
+    .on("tick", () => {
+      linkEl
+        .attr("x1", d => d.source.x)
+        .attr("y1", d => d.source.y)
+        .attr("x2", d => d.target.x)
+        .attr("y2", d => d.target.y);
+
+      linkLabel
+        .attr("x", d => (d.source.x + d.target.x) / 2)
+        .attr("y", d => (d.source.y + d.target.y) / 2);
+
+      nodeEl.attr("transform", d => `translate(${d.x},${d.y})`);
+      labelEl
+        .attr("x", d => d.x)
+        .attr("y", d => d.y + 18);
+    });
+
+  // 点击空白取消选择
+  svgEl.addEventListener("click", (e) => {
+    if (e.target === svgEl) hideDetail();
+  });
+}
+
+// ═══════════════════════════════════════════
+// 详情面板
+// ═══════════════════════════════════════════
+function showDetail(term) {
+  currentDetail = term;
+  document.getElementById("sidebar-title").textContent = term.name;
+  document.getElementById("sidebar").classList.remove("collapsed");
+
+  const rels = termsData.relations.filter(r =>
+    r.source === term.id || r.target === term.id
+  );
+  const nodeMap = new Map(termsData.terms.map(t => [t.id, t]));
+
+  const linksHtml = rels.length ? `
+    <div class="links">
+      <h4>关联术语 (${rels.length})</h4>
+      ${rels.map(r => {
+        const otherId = r.source === term.id ? r.target : r.source;
+        const other = nodeMap.get(otherId);
+        const dir = r.source === term.id ? "→" : "←";
+        return `<span class="link-item" data-id="${otherId}">
+          ${dir} ${other ? other.name : otherId}
+          <span class="rel"> ${r.type}</span>
+        </span>`;
+      }).join("")}
+    </div>
+  ` : "";
+
+  document.getElementById("sidebar-body").innerHTML = `
+    <div class="detail-card">
+      <div class="name" style="color:${CATEGORY_COLORS[term.category] || "#888"}">${term.name}</div>
+      <span class="category">${term.category}</span>
+      <div class="summary">${term.summary}</div>
+      <div class="explanation">${term.explanation}</div>
+      ${term.tags ? `<div class="tags">${term.tags.map(t => `<span>${t}</span>`).join("")}</div>` : ""}
+      ${linksHtml}
+    </div>
+  `;
+
+  // 点击关联术语跳转
+  document.querySelectorAll(".link-item").forEach(el => {
+    el.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const id = el.dataset.id;
+      const target = termsData.terms.find(t => t.id === id);
+      if (target) showDetail(target);
+    });
+  });
+}
+
+function hideDetail() {
+  currentDetail = null;
+  document.getElementById("sidebar").classList.add("collapsed");
+}
+
+document.getElementById("sidebar-close").addEventListener("click", hideDetail);
+
+// ═══════════════════════════════════════════
+// 搜索
+// ═══════════════════════════════════════════
+function setupSearch() {
+  const input = document.getElementById("search");
+  input.addEventListener("input", () => {
+    const q = input.value.trim().toLowerCase();
+    if (!q) {
+      // 恢复所有
+      gNodes.selectAll("g").style("opacity", 1);
+      gLabels.selectAll("text").style("opacity", 1);
+      gLinks.selectAll("line").style("opacity", 0.6);
+      gLinks.selectAll("text").style("opacity", 1);
+      return;
+    }
+
+    const matchedIds = new Set(
+      termsData.terms.filter(t =>
+        t.name.toLowerCase().includes(q) ||
+        t.summary.toLowerCase().includes(q) ||
+        t.tags?.some(tag => tag.toLowerCase().includes(q))
+      ).map(t => t.id)
+    );
+
+    // 高亮匹配节点及其邻居
+    const highlightIds = new Set(matchedIds);
+    termsData.relations.forEach(r => {
+      if (matchedIds.has(r.source)) highlightIds.add(r.target);
+      if (matchedIds.has(r.target)) highlightIds.add(r.source);
+    });
+
+    gNodes.selectAll("g").style("opacity", d => highlightIds.has(d.id) ? 1 : 0.08);
+    gLabels.selectAll("text").style("opacity", d => highlightIds.has(d.id) ? 1 : 0.08);
+    gLinks.selectAll("line").style("opacity", d =>
+      matchedIds.has(typeof d.source === "object" ? d.source.id : d.source) ||
+      matchedIds.has(typeof d.target === "object" ? d.target.id : d.target) ? 1 : 0.03
+    );
+    gLinks.selectAll("text").style("opacity", d =>
+      matchedIds.has(typeof d.source === "object" ? d.source.id : d.source) ||
+      matchedIds.has(typeof d.target === "object" ? d.target.id : d.target) ? 1 : 0.03
+    );
+  });
+}
+
+// ═══════════════════════════════════════════
+// 启动
+// ═══════════════════════════════════════════
+init();
+</script>
+</body>
+</html>
